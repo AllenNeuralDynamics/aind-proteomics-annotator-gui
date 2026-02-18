@@ -367,21 +367,22 @@ class ChannelControlsPanel(QWidget):
         for name in channel_names:
             widget = ChannelControlWidget(name, self._viewer, parent=self._inner)
 
+            # Restore saved prefs BEFORE connecting save-triggers.
+            ch = saved.get(name, {})
+            if "color" in ch:
+                widget.apply_color(ch["color"])
+            has_saved_range = "range_lo" in ch and "range_hi" in ch
+            if has_saved_range:
+                widget.apply_range(ch["range_lo"], ch["range_hi"])
+
             if self._viewer is not None:
                 try:
                     layer = self._viewer.layers[name]
                     lo, hi = layer.contrast_limits_range
-                    widget.update_data_range(float(lo), float(hi))
+                    if not has_saved_range:
+                        widget.update_data_range(float(lo), float(hi))
                 except (KeyError, AttributeError):
                     pass
-
-            # Restore saved prefs BEFORE connecting save-triggers.
-            if name in saved:
-                ch = saved[name]
-                if "color" in ch:
-                    widget.apply_color(ch["color"])
-                if "range_lo" in ch and "range_hi" in ch:
-                    widget.apply_range(ch["range_lo"], ch["range_hi"])
 
             widget.lut_changed.connect(lambda *_: self._sync_live_prefs())
             widget.range_changed.connect(lambda *_: self._sync_live_prefs())
@@ -390,6 +391,11 @@ class ChannelControlsPanel(QWidget):
                 self._inner_layout.count() - 1, widget
             )
             self._widgets[name] = widget
+
+        # Capture the current configuration (saved prefs or auto-range) so
+        # the next block load inherits the same settings without requiring a
+        # manual user interaction to populate _live_prefs first.
+        self._sync_live_prefs()
 
     # ------------------------------------------------------------------
     # Help text
