@@ -6,9 +6,10 @@ dependency of napari itself, so no extra install is required).
 
 from __future__ import annotations
 
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QColorDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -137,6 +138,8 @@ class ChannelControlsPanel(QWidget):
         self._viewer = None
         self._widgets: dict[str, ChannelControlWidget] = {}
 
+        self.setMinimumWidth(280)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -151,6 +154,48 @@ class ChannelControlsPanel(QWidget):
         self._inner_layout.addStretch()
         self._scroll.setWidget(self._inner)
         outer.addWidget(self._scroll, stretch=1)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        outer.addWidget(sep)
+
+        # Info / help panel
+        info_box = QGroupBox("Help & Instructions")
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setSpacing(4)
+        info_layout.setContentsMargins(6, 6, 6, 6)
+
+        info_text = QLabel(
+            "<b>Navigation</b><br>"
+            "&nbsp;&nbsp;Click a block in the sidebar to load it<br>"
+            "&nbsp;&nbsp;<b>Space</b> — jump to the next block<br>"
+            "<br>"
+            "<b>Annotation keys</b><br>"
+            "&nbsp;&nbsp;<b>1</b> — "
+            "<span style='color:#22AA44;'>&#9632;</span> Class 1<br>"
+            "&nbsp;&nbsp;<b>2</b> — "
+            "<span style='color:#2266FF;'>&#9632;</span> Class 2<br>"
+            "&nbsp;&nbsp;<b>3</b> — "
+            "<span style='color:#FF6622;'>&#9632;</span> Class 3<br>"
+            "<br>"
+            "<b>Label colours (sidebar)</b><br>"
+            "&nbsp;&nbsp;<span style='color:#777777;'>&#9632;</span> Grey — unannotated<br>"
+            "&nbsp;&nbsp;<span style='color:#22AA44;'>&#9632;</span> Green — Class 1<br>"
+            "&nbsp;&nbsp;<span style='color:#2266FF;'>&#9632;</span> Blue — Class 2<br>"
+            "&nbsp;&nbsp;<span style='color:#FF6622;'>&#9632;</span> Orange — Class 3<br>"
+            "<br>"
+            "<b>Viewer</b><br>"
+            "&nbsp;&nbsp;Use <i>Z-slice auto-play</i> to scroll<br>"
+            "&nbsp;&nbsp;through depth slices automatically.<br>"
+            "&nbsp;&nbsp;<b>−</b> / <b>+</b> adjust playback speed."
+        )
+        info_text.setWordWrap(True)
+        info_text.setTextFormat(Qt.RichText)
+        info_text.setStyleSheet("font-size: 11px; padding: 2px;")
+        info_layout.addWidget(info_text)
+        outer.addWidget(info_box)
 
     # ------------------------------------------------------------------
     # Public API

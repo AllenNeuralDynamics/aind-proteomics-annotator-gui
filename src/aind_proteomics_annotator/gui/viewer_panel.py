@@ -96,9 +96,10 @@ class ViewerPanel(QWidget):
 
         # Autoplay controls strip.
         controls_bar = QWidget()
-        controls_bar.setFixedHeight(36)
+        controls_bar.setFixedHeight(40)
         ctrl_layout = QHBoxLayout(controls_bar)
         ctrl_layout.setContentsMargins(8, 4, 8, 4)
+        ctrl_layout.setSpacing(6)
         ctrl_layout.addWidget(QLabel("Z-slice auto-play:"))
 
         self._autoplay_btn = QPushButton("Start")
@@ -107,9 +108,23 @@ class ViewerPanel(QWidget):
         ctrl_layout.addWidget(self._autoplay_btn)
 
         self._interval_label = QLabel(
-            f"({self._config.autoplay_interval_ms // 1000}s/frame)"
+            f"({self._config.autoplay_interval_ms / 1000:.1f}s/frame)"
         )
         ctrl_layout.addWidget(self._interval_label)
+
+        ctrl_layout.addSpacing(8)
+        ctrl_layout.addWidget(QLabel("Speed:"))
+
+        self._slower_btn = QPushButton("−")
+        self._slower_btn.setFixedWidth(28)
+        self._slower_btn.setToolTip("Slower (increase interval by 0.5 s)")
+        ctrl_layout.addWidget(self._slower_btn)
+
+        self._faster_btn = QPushButton("+")
+        self._faster_btn.setFixedWidth(28)
+        self._faster_btn.setToolTip("Faster (decrease interval by 0.5 s)")
+        ctrl_layout.addWidget(self._faster_btn)
+
         ctrl_layout.addStretch()
 
         layout.addWidget(controls_bar)
@@ -117,6 +132,8 @@ class ViewerPanel(QWidget):
     def _connect_internal(self) -> None:
         self._autoplay_btn.toggled.connect(self._toggle_autoplay)
         self._autoplay_timer.timeout.connect(self._advance_z_slice)
+        self._slower_btn.clicked.connect(self._play_slower)
+        self._faster_btn.clicked.connect(self._play_faster)
 
     # ------------------------------------------------------------------
     # Public API
@@ -210,6 +227,18 @@ class ViewerPanel(QWidget):
     # ------------------------------------------------------------------
     # Autoplay
     # ------------------------------------------------------------------
+
+    def _play_slower(self) -> None:
+        """Increase the autoplay interval by 500 ms (play slower), max 10 s."""
+        new_ms = min(10_000, self._autoplay_timer.interval() + 500)
+        self._autoplay_timer.setInterval(new_ms)
+        self._interval_label.setText(f"({new_ms / 1000:.1f}s/frame)")
+
+    def _play_faster(self) -> None:
+        """Decrease the autoplay interval by 500 ms (play faster), min 200 ms."""
+        new_ms = max(200, self._autoplay_timer.interval() - 500)
+        self._autoplay_timer.setInterval(new_ms)
+        self._interval_label.setText(f"({new_ms / 1000:.1f}s/frame)")
 
     def _toggle_autoplay(self, checked: bool) -> None:
         if checked:

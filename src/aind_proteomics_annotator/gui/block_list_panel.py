@@ -74,6 +74,15 @@ class BlockListPanel(QWidget):
             self._list.addItem(item)
         self._update_progress(store)
 
+    def select_next_block(self) -> None:
+        """Select the next block in the list, wrapping at the end."""
+        count = self._list.count()
+        if count == 0:
+            return
+        current_row = self._list.currentRow()
+        next_row = (current_row + 1) % count
+        self._list.setCurrentRow(next_row)
+
     def refresh_block_status(self, block_id: str) -> None:
         """Re-colour a single block after annotation."""
         for i in range(self._list.count()):

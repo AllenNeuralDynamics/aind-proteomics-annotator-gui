@@ -107,9 +107,10 @@ class MainWindow(QMainWindow):
         self._channel_controls.set_viewer(self._viewer_panel.viewer)
         viewer_splitter.addWidget(self._channel_controls)
 
-        # Viewer gets 5× more space than channel controls
-        viewer_splitter.setStretchFactor(0, 5)
+        # Viewer gets ~3× more space than channel controls
+        viewer_splitter.setStretchFactor(0, 3)
         viewer_splitter.setStretchFactor(1, 1)
+        viewer_splitter.setSizes([1050, 370])
 
         ann_layout.addWidget(viewer_splitter)
         self._tabs.addTab(annotator_widget, "Annotator")
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
 
     def _install_shortcuts(self) -> None:
         """Bind keys 1, 2, 3 → annotation labels 1, 2, 3.
+        Space → jump to next block.
 
         Qt.ApplicationShortcut ensures the shortcuts fire even when the
         napari canvas (vispy) holds keyboard focus.
@@ -154,6 +156,10 @@ class MainWindow(QMainWindow):
             sc.setContext(Qt.ApplicationShortcut)
             # Use default arg to capture `label` by value in the closure.
             sc.activated.connect(lambda lbl=label: self._annotate(lbl))
+
+        sc_space = QShortcut(QKeySequence(Qt.Key_Space), self)
+        sc_space.setContext(Qt.ApplicationShortcut)
+        sc_space.activated.connect(self._block_list.select_next_block)
 
     # ------------------------------------------------------------------
     # Slot implementations
