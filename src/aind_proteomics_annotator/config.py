@@ -53,8 +53,15 @@ class AppConfig:
     @classmethod
     def from_environment(cls) -> "AppConfig":
         """Build config from environment variables with sensible defaults."""
+        roles_file = Path(
+            os.environ.get("ANNOTATOR_ROLES_FILE", "./configs/roles.json")
+        )
+        # Default classes file to the same directory as roles.json so that
+        # relative paths set via ANNOTATOR_ROLES_FILE resolve correctly even
+        # when the app is launched from a subdirectory (e.g. scripts/).
+        default_classes = str(roles_file.parent / "classes.json")
         classes_file = Path(
-            os.environ.get("ANNOTATOR_CLASSES_FILE", "./configs/classes.json")
+            os.environ.get("ANNOTATOR_CLASSES_FILE", default_classes)
         )
         class_defs = cls._load_class_defs(classes_file)
         return cls(
@@ -64,9 +71,7 @@ class AppConfig:
             annotations_root=Path(
                 os.environ.get("ANNOTATOR_ANNOTATIONS_ROOT", "./annotations")
             ),
-            roles_file=Path(
-                os.environ.get("ANNOTATOR_ROLES_FILE", "./configs/roles.json")
-            ),
+            roles_file=roles_file,
             classes_file=classes_file,
             classes=[c["name"] for c in class_defs],
             class_colors=[c["color"] for c in class_defs],

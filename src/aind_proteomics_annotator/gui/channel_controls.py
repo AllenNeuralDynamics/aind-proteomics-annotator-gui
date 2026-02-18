@@ -283,6 +283,10 @@ class ChannelControlsPanel(QWidget):
         self._config = config
         self._class_names: list[str] = []
         self._class_colors: list[str] = []
+        # In-memory prefs updated synchronously on every change.  Used as the
+        # primary source when rebuilding controls on block switch, so settings
+        # always carry over regardless of debounce timing.
+        self._live_prefs: dict = {}
 
         self.setMinimumWidth(280)
 
@@ -348,20 +352,17 @@ class ChannelControlsPanel(QWidget):
 
     def setup_channels(self, channel_names: list) -> None:
         """Rebuild controls for a freshly loaded block."""
-        # Flush any pending debounced save NOW, before clearing widgets, so
-        # that adjustments made on the previous block are persisted and can be
-        # restored for the incoming block.
-        if self._save_timer.isActive():
-            self._save_timer.stop()
-            self._save_prefs()
-
         while self._inner_layout.count() > 1:
             item = self._inner_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self._widgets.clear()
 
-        saved = self._load_prefs()
+        # Live in-memory prefs are always current (updated synchronously on
+        # every change).  Fall back to disk only on the very first block load
+        # of a session (live_prefs is empty) so previous-session settings are
+        # restored automatically.
+        saved = self._live_prefs if self._live_prefs else self._load_prefs()
 
         for name in channel_names:
             widget = ChannelControlWidget(name, self._viewer, parent=self._inner)
@@ -382,8 +383,8 @@ class ChannelControlsPanel(QWidget):
                 if "range_lo" in ch and "range_hi" in ch:
                     widget.apply_range(ch["range_lo"], ch["range_hi"])
 
-            widget.lut_changed.connect(lambda *_: self._schedule_save())
-            widget.range_changed.connect(lambda *_: self._schedule_save())
+            widget.lut_changed.connect(lambda *_: self._sync_live_prefs())
+            widget.range_changed.connect(lambda *_: self._sync_live_prefs())
 
             self._inner_layout.insertWidget(
                 self._inner_layout.count() - 1, widget
@@ -432,6 +433,16 @@ class ChannelControlsPanel(QWidget):
     # ------------------------------------------------------------------
     # Prefs persistence (internal)
     # ------------------------------------------------------------------
+
+    def _sync_live_prefs(self) -> None:
+        """Capture current widget state into _live_prefs, then schedule disk save.
+
+        Called synchronously on every slider or swatch change so that
+        _live_prefs is always up-to-date when setup_channels() runs next.
+        """
+        for name, widget in self._widgets.items():
+            self._live_prefs[name] = widget.get_prefs()
+        self._schedule_save()
 
     def _schedule_save(self) -> None:
         if self._prefs_file is not None:

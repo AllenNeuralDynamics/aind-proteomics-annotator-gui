@@ -95,7 +95,8 @@ class ViewerPanel(QWidget):
 
         # Bind 'r' through napari's key system so reset_view works when the
         # vispy canvas has focus (Qt ApplicationShortcut doesn't reach it).
-        self._viewer.bind_key("r", lambda _: self._viewer.reset_view())
+        # overwrite=True is required; napari already owns 'r' for roll-dims.
+        self._viewer.bind_key("r", lambda _: self._viewer.reset_view(), overwrite=True)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
