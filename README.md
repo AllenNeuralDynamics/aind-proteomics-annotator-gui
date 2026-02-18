@@ -2,6 +2,8 @@
 
 A Python desktop GUI for annotating 3D multi-channel TIFF image blocks generated from proteomics imaging pipelines at the Allen Institute for Neural Dynamics (AIND). Multiple annotators on different machines access a shared filesystem simultaneously; the tool is designed to be safe under those conditions.
 
+To execute `sh launch.sh`. You can change the configuration in the environment variables.
+
 ---
 
 ## Table of Contents
