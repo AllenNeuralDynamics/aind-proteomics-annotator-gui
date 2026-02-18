@@ -62,3 +62,9 @@ class BlockRegistry:
 
     def block_count(self) -> int:
         return len(self._blocks)
+
+    def rescan(self, new_root: "Path | None" = None) -> None:
+        """Change the data root (optional) and re-scan the filesystem."""
+        if new_root is not None:
+            self._data_root = Path(new_root)
+        self.scan()

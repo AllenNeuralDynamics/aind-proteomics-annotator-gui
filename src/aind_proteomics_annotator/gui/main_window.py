@@ -9,7 +9,7 @@ QMainWindow
     │   └── QTabWidget            [stretch 6]  – right area
     │       ├── "Annotator" tab
     │       │   └── QSplitter (horizontal)
-    │       │       ├── ViewerPanel           [stretch 5]
+    │       │       ├── ViewerPanel           [stretch 3]
     │       │       └── ChannelControlsPanel  [stretch 1]
     │       └── "Admin View" tab  (admin users only)
     │           └── AdminPanel
@@ -17,8 +17,15 @@ QMainWindow
 
 Keyboard shortcuts
 ------------------
-Keys 1, 2, 3 are installed with Qt.ApplicationShortcut context so they
-fire even when the napari vispy canvas holds keyboard focus.
+Keys 1..N  – annotate with label N
+Space      – toggle Z auto-play
+Up / Down  – previous / next block
+R          – reset napari view
+Backspace  – undo current annotation
+Alt+1..7   – toggle channel visibility
+
+All shortcuts use Qt.ApplicationShortcut so they fire even when the
+napari vispy canvas holds keyboard focus.
 """
 
 from __future__ import annotations
@@ -71,6 +78,7 @@ class MainWindow(QMainWindow):
             self._registry.all_blocks(),
             self._session.store,
         )
+        self._bottom.set_total(self._registry.block_count())
 
     # ------------------------------------------------------------------
     # UI construction
@@ -87,7 +95,10 @@ class MainWindow(QMainWindow):
         h_splitter = QSplitter(Qt.Horizontal)
 
         # -- Left panel: block list --
-        self._block_list = BlockListPanel(session=self._session)
+        self._block_list = BlockListPanel(
+            session=self._session,
+            config=self._config,
+        )
         h_splitter.addWidget(self._block_list)
 
         # -- Right: tab widget --
@@ -100,13 +111,21 @@ class MainWindow(QMainWindow):
 
         viewer_splitter = QSplitter(Qt.Horizontal)
 
-        self._viewer_panel = ViewerPanel(session=self._session, config=self._config)
+        self._viewer_panel = ViewerPanel(
+            session=self._session,
+            config=self._config,
+            registry=self._registry,
+        )
         viewer_splitter.addWidget(self._viewer_panel)
 
-        self._channel_controls = ChannelControlsPanel()
+        self._channel_controls = ChannelControlsPanel(config=self._config)
         self._channel_controls.set_viewer(self._viewer_panel.viewer)
         self._channel_controls.set_prefs_file(
             self._config.channel_prefs_file(self._session.username)
+        )
+        self._channel_controls.set_class_info(
+            self._config.classes,
+            self._config.class_colors,
         )
         viewer_splitter.addWidget(self._channel_controls)
 
@@ -141,6 +160,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._block_list.block_selected.connect(self._on_block_selected)
+        self._block_list.browse_requested.connect(self._on_browse_requested)
         self._viewer_panel.loading_started.connect(self._bottom.show_loading)
         self._viewer_panel.loading_finished.connect(self._bottom.hide_loading)
         self._viewer_panel.channels_loaded.connect(
@@ -148,21 +168,31 @@ class MainWindow(QMainWindow):
         )
 
     def _install_shortcuts(self) -> None:
-        """Bind keys 1, 2, 3 → annotation labels 1, 2, 3.
-        Space → jump to next block.
+        """Install all application-wide keyboard shortcuts."""
 
-        Qt.ApplicationShortcut ensures the shortcuts fire even when the
-        napari canvas (vispy) holds keyboard focus.
-        """
+        def _sc(key, slot):
+            s = QShortcut(QKeySequence(key), self)
+            s.setContext(Qt.ApplicationShortcut)
+            s.activated.connect(slot)
+            return s
+
+        # Annotation labels 1..N
         for label in range(1, len(self._config.classes) + 1):
-            sc = QShortcut(QKeySequence(str(label)), self)
-            sc.setContext(Qt.ApplicationShortcut)
-            # Use default arg to capture `label` by value in the closure.
-            sc.activated.connect(lambda lbl=label: self._annotate(lbl))
+            _sc(str(label), lambda lbl=label: self._annotate(lbl))
 
-        sc_space = QShortcut(QKeySequence(Qt.Key_Space), self)
-        sc_space.setContext(Qt.ApplicationShortcut)
-        sc_space.activated.connect(self._block_list.select_next_block)
+        # Playback / navigation
+        _sc(Qt.Key_Space, self._viewer_panel.toggle_autoplay)
+        _sc(Qt.Key_Up, self._go_prev)
+        _sc(Qt.Key_Down, self._go_next)
+        _sc(Qt.Key_R, self._viewer_panel.reset_view)
+        _sc(Qt.Key_Backspace, self._undo_annotation)
+
+        # Channel visibility Alt+1..7
+        for ch_idx in range(1, 8):
+            _sc(
+                QKeySequence(Qt.ALT | getattr(Qt, f"Key_{ch_idx}")),
+                lambda idx=ch_idx - 1: self._viewer_panel.toggle_channel_visibility(idx),
+            )
 
     # ------------------------------------------------------------------
     # Slot implementations
@@ -174,6 +204,7 @@ class MainWindow(QMainWindow):
             return
         self._viewer_panel.load_block(block_info)
         self._bottom.set_current_block(block_id)
+        self._update_overlay_progress()
 
     def _annotate(self, label: int) -> None:
         """Apply *label* to the currently displayed block and persist."""
@@ -181,18 +212,61 @@ class MainWindow(QMainWindow):
         if block_id is None:
             return
 
-        # Persist annotation (atomic write to disk).
+        # Persist annotation.
         self._session.store.set_label(block_id, label)
 
-        # Update overlay.
+        # Update overlay label.
         class_name = ""
         if 1 <= label <= len(self._config.classes):
             class_name = self._config.classes[label - 1]
         self._viewer_panel.show_label(label, class_name)
 
-        # Refresh block list colour.
+        # Refresh block list colour and progress bar.
         self._block_list.refresh_block_status(block_id)
-
-        # Update progress bar.
         annotated_count = len(self._session.store.annotated_block_ids())
         self._bottom.update_progress(annotated_count)
+        self._update_overlay_progress()
+
+        # Auto-advance to the next block when the option is on.
+        if self._block_list.auto_advance:
+            self._go_next()
+
+    def _undo_annotation(self) -> None:
+        """Clear the annotation for the currently displayed block."""
+        block_id = self._viewer_panel.current_block_id
+        if block_id is None:
+            return
+        self._session.store.clear_label(block_id)
+        self._viewer_panel.show_label(None)
+        self._block_list.refresh_block_status(block_id)
+        annotated_count = len(self._session.store.annotated_block_ids())
+        self._bottom.update_progress(annotated_count)
+        self._update_overlay_progress()
+
+    def _go_next(self) -> None:
+        self._block_list.select_next_block()
+
+    def _go_prev(self) -> None:
+        self._block_list.select_prev_block()
+
+    def _on_browse_requested(self, path: str) -> None:
+        """Switch to a new data root directory."""
+        self._registry.rescan(path)
+        self._viewer_panel._block_cache.clear()
+        blocks = self._registry.all_blocks()
+        self._block_list.populate(blocks, self._session.store)
+        self._bottom.set_total(self._registry.block_count())
+        annotated_count = len(self._session.store.annotated_block_ids())
+        self._bottom.update_progress(annotated_count)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _update_overlay_progress(self) -> None:
+        """Push current block index + remaining counts to the overlay."""
+        block_index = self._block_list.current_block_index()
+        total = self._registry.block_count()
+        annotated = len(self._session.store.annotated_block_ids())
+        unannotated = total - annotated
+        self._viewer_panel.update_overlay_progress(block_index, total, unannotated)

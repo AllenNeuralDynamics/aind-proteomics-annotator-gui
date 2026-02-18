@@ -30,7 +30,6 @@ from pathlib import Path
 import numpy as np
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
-    QColorDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -47,15 +46,28 @@ try:
 except ImportError:
     _HAS_SUPERQT = False
 
+# Fixed LUT colour palette shown as swatches.
+_SWATCH_COLORS: list[tuple[str, str]] = [
+    ("#FF0000", "Red"),
+    ("#00FF00", "Green"),
+    ("#0000FF", "Blue"),
+    ("#FF00FF", "Magenta"),
+    ("#FFFFFF", "White"),
+    ("#00FFFF", "Cyan"),
+    ("#FFFF00", "Yellow"),
+]
+
+_SWATCH_SELECTED_BORDER = "2px solid #FFFFFF"
+_SWATCH_DEFAULT_BORDER  = "1px solid #555555"
+
 
 class ChannelControlWidget(QGroupBox):
     """Controls for a single image channel.
 
     Contains:
-    - A *Pick Color* button that opens a QColorDialog and updates the
-      napari layer's colormap via a vispy Colormap.
-    - An *Auto* button that sets the range to the 1st–99th percentile of
-      the current layer's data.
+    - A row of coloured LUT swatch buttons (red/green/blue/magenta/white/cyan/yellow).
+    - An *Auto* button that sets the range to the 1st–99.9th percentile
+      of the current layer's data.
     - A range slider (superqt) that updates the layer's contrast_limits.
     """
 
@@ -66,20 +78,29 @@ class ChannelControlWidget(QGroupBox):
         super().__init__(channel_name, parent)
         self._channel_name = channel_name
         self._viewer = viewer
-        self._current_color = "#ffffff"
-        self._color_customized = False  # True once the user (or prefs) sets a color
+        self._current_color: str | None = None  # None = use napari default
+        self._color_customized = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
 
-        # LUT row
-        lut_row = QHBoxLayout()
-        lut_row.addWidget(QLabel("LUT:"))
-        self._color_btn = QPushButton("Pick Color…")
-        self._color_btn.setFixedHeight(24)
-        self._color_btn.clicked.connect(self._pick_color)
-        lut_row.addWidget(self._color_btn)
-        layout.addLayout(lut_row)
+        # LUT swatch row
+        swatch_row = QHBoxLayout()
+        swatch_row.setSpacing(3)
+        swatch_row.addWidget(QLabel("LUT:"))
+        self._swatches: list[tuple[QPushButton, str]] = []
+        for hex_color, tip in _SWATCH_COLORS:
+            btn = QPushButton()
+            btn.setFixedSize(22, 22)
+            btn.setToolTip(tip)
+            btn.setStyleSheet(
+                f"background-color: {hex_color}; border: {_SWATCH_DEFAULT_BORDER};"
+            )
+            btn.clicked.connect(lambda _=False, c=hex_color: self._apply_swatch(c))
+            swatch_row.addWidget(btn)
+            self._swatches.append((btn, hex_color))
+        swatch_row.addStretch()
+        layout.addLayout(swatch_row)
 
         # Range header: label + Auto button
         range_header = QHBoxLayout()
@@ -89,7 +110,7 @@ class ChannelControlWidget(QGroupBox):
         self._auto_btn.setFixedHeight(22)
         self._auto_btn.setFixedWidth(45)
         self._auto_btn.setToolTip(
-            "Set range to the 1st–99th percentile of the current channel data"
+            "Set range to the 1st–99.9th percentile of the current channel data"
         )
         self._auto_btn.clicked.connect(self._auto_range)
         range_header.addWidget(self._auto_btn)
@@ -122,33 +143,25 @@ class ChannelControlWidget(QGroupBox):
 
     def apply_color(self, color_hex: str) -> None:
         """Apply a LUT colour by hex string (used when restoring saved prefs)."""
-        from qtpy.QtGui import QColor
-        color = QColor(color_hex)
-        if not color.isValid():
-            return
         self._color_customized = True
-        self._current_color = color.name()
-        self._color_btn.setStyleSheet(
-            f"background-color: {color.name()}; "
-            f"color: {'#000' if color.lightness() > 128 else '#fff'};"
-        )
+        self._current_color = color_hex
+        self._update_swatch_highlight(color_hex)
         layer = self._get_layer()
         if layer is not None:
             try:
                 from vispy.color import Colormap
-                layer.colormap = Colormap(["black", color.name()])
+                layer.colormap = Colormap(["black", color_hex])
             except Exception:
                 pass
 
     def apply_range(self, lo: float, hi: float) -> None:
         """Apply a range to the slider (values clamped to current bounds).
 
-        Does not emit *range_changed* — call this before connecting signals
-        so that restoring saved prefs does not trigger spurious saves.
+        Call this *before* connecting signals so that restoring saved prefs
+        does not trigger spurious saves.
         """
         if self._range_slider is None:
             return
-        # Widen bounds silently if saved range is outside the data range.
         cur_min = self._range_slider.minimum()
         cur_max = self._range_slider.maximum()
         if lo < cur_min or hi > cur_max:
@@ -159,8 +172,6 @@ class ChannelControlWidget(QGroupBox):
             if layer is not None:
                 layer.contrast_limits_range = [new_min, new_max]
         self._range_slider.setValue((lo, hi))
-        # Apply directly to the layer (slider signal not yet connected at
-        # prefs-restore time, so we do it manually).
         layer = self._get_layer()
         if layer is not None:
             try:
@@ -171,7 +182,7 @@ class ChannelControlWidget(QGroupBox):
     def get_prefs(self) -> dict:
         """Return the current display settings as a serialisable dict."""
         prefs: dict = {}
-        if self._color_customized:
+        if self._color_customized and self._current_color is not None:
             prefs["color"] = self._current_color
         if self._range_slider is not None:
             lo, hi = self._range_slider.value()
@@ -191,8 +202,33 @@ class ChannelControlWidget(QGroupBox):
         except KeyError:
             return None
 
+    def _update_swatch_highlight(self, selected_hex: str) -> None:
+        norm = selected_hex.lower()
+        for btn, hex_color in self._swatches:
+            border = (
+                _SWATCH_SELECTED_BORDER
+                if hex_color.lower() == norm
+                else _SWATCH_DEFAULT_BORDER
+            )
+            btn.setStyleSheet(
+                f"background-color: {hex_color}; border: {border};"
+            )
+
+    def _apply_swatch(self, color_hex: str) -> None:
+        self._color_customized = True
+        self._current_color = color_hex
+        self._update_swatch_highlight(color_hex)
+        layer = self._get_layer()
+        if layer is not None:
+            try:
+                from vispy.color import Colormap
+                layer.colormap = Colormap(["black", color_hex])
+            except Exception as exc:
+                print(f"[ChannelControls] Could not apply colormap: {exc}")
+        self.lut_changed.emit(self._channel_name, color_hex)
+
     def _auto_range(self) -> None:
-        """Set range to the 1st–99th percentile of the current layer data."""
+        """Set range to the 1st–99.9th percentile of the current layer data."""
         layer = self._get_layer()
         if layer is None:
             return
@@ -200,43 +236,20 @@ class ChannelControlWidget(QGroupBox):
         if data is None or data.size == 0:
             return
         lo = float(np.percentile(data, 1))
-        hi = float(np.percentile(data, 99))
+        hi = float(np.percentile(data, 99.9))
         if hi <= lo:
             hi = lo + 1.0
         if self._range_slider is not None:
-            # Widen slider bounds to fit the computed range if necessary.
             cur_min = self._range_slider.minimum()
             cur_max = self._range_slider.maximum()
             if lo < cur_min or hi > cur_max:
                 new_min = min(lo, cur_min)
                 new_max = max(hi, cur_max)
                 self._range_slider.setRange(new_min, new_max)
+                layer = self._get_layer()
                 if layer is not None:
                     layer.contrast_limits_range = [new_min, new_max]
             self._range_slider.setValue((lo, hi))
-            # _on_range_changed fires and updates contrast_limits.
-
-    def _pick_color(self) -> None:
-        from qtpy.QtGui import QColor
-        initial = QColor(self._current_color)
-        color = QColorDialog.getColor(initial, self, f"LUT colour — {self._channel_name}")
-        if not color.isValid():
-            return
-        self._color_customized = True
-        self._current_color = color.name()
-        self._color_btn.setStyleSheet(
-            f"background-color: {color.name()}; "
-            f"color: {'#000' if color.lightness() > 128 else '#fff'};"
-        )
-        layer = self._get_layer()
-        if layer is not None:
-            try:
-                from vispy.color import Colormap
-                cmap = Colormap(["black", color.name()])
-                layer.colormap = cmap
-            except Exception as exc:
-                print(f"[ChannelControls] Could not apply colormap: {exc}")
-        self.lut_changed.emit(self._channel_name, color.name())
 
     def _on_range_changed(self, values) -> None:
         lo, hi = float(values[0]), float(values[1])
@@ -257,13 +270,19 @@ class ChannelControlsPanel(QWidget):
 
     Call :meth:`set_prefs_file` once at startup to enable persistent
     save/restore of channel display settings across sessions.
+
+    Call :meth:`set_class_info` once at startup to populate the help panel
+    with the configurable class names and colours.
     """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, config=None, parent=None) -> None:
         super().__init__(parent)
         self._viewer = None
         self._widgets: dict[str, ChannelControlWidget] = {}
         self._prefs_file: Path | None = None
+        self._config = config
+        self._class_names: list[str] = []
+        self._class_colors: list[str] = []
 
         self.setMinimumWidth(280)
 
@@ -294,41 +313,20 @@ class ChannelControlsPanel(QWidget):
         sep.setFrameShadow(QFrame.Sunken)
         outer.addWidget(sep)
 
-        # Info / help panel
-        info_box = QGroupBox("Help & Instructions")
+        # Help / instructions panel
+        info_box = QGroupBox("Help & Shortcuts")
         info_layout = QVBoxLayout(info_box)
         info_layout.setSpacing(4)
         info_layout.setContentsMargins(6, 6, 6, 6)
 
-        info_text = QLabel(
-            "<b>Navigation</b><br>"
-            "&nbsp;&nbsp;Click a block in the sidebar to load it<br>"
-            "&nbsp;&nbsp;<b>Space</b> — jump to the next block<br>"
-            "<br>"
-            "<b>Annotation keys</b><br>"
-            "&nbsp;&nbsp;<b>1</b> — "
-            "<span style='color:#22AA44;'>&#9632;</span> Class 1<br>"
-            "&nbsp;&nbsp;<b>2</b> — "
-            "<span style='color:#2266FF;'>&#9632;</span> Class 2<br>"
-            "&nbsp;&nbsp;<b>3</b> — "
-            "<span style='color:#FF6622;'>&#9632;</span> Class 3<br>"
-            "<br>"
-            "<b>Label colours (sidebar)</b><br>"
-            "&nbsp;&nbsp;<span style='color:#777777;'>&#9632;</span> Grey — unannotated<br>"
-            "&nbsp;&nbsp;<span style='color:#22AA44;'>&#9632;</span> Green — Class 1<br>"
-            "&nbsp;&nbsp;<span style='color:#2266FF;'>&#9632;</span> Blue — Class 2<br>"
-            "&nbsp;&nbsp;<span style='color:#FF6622;'>&#9632;</span> Orange — Class 3<br>"
-            "<br>"
-            "<b>Viewer</b><br>"
-            "&nbsp;&nbsp;Use <i>Z-slice auto-play</i> to scroll<br>"
-            "&nbsp;&nbsp;through depth slices automatically.<br>"
-            "&nbsp;&nbsp;<b>−</b> / <b>+</b> adjust playback speed."
-        )
-        info_text.setWordWrap(True)
-        info_text.setTextFormat(Qt.RichText)
-        info_text.setStyleSheet("font-size: 11px; padding: 2px;")
-        info_layout.addWidget(info_text)
+        self._info_label = QLabel()
+        self._info_label.setWordWrap(True)
+        self._info_label.setTextFormat(Qt.RichText)
+        self._info_label.setStyleSheet("font-size: 11px; padding: 2px;")
+        info_layout.addWidget(self._info_label)
         outer.addWidget(info_box)
+
+        self._refresh_help()
 
     # ------------------------------------------------------------------
     # Public API
@@ -342,9 +340,21 @@ class ChannelControlsPanel(QWidget):
         """Set the JSON file used to persist channel display preferences."""
         self._prefs_file = Path(path)
 
+    def set_class_info(self, classes: list, colors: list) -> None:
+        """Rebuild the help panel using configurable class names and colours."""
+        self._class_names = list(classes)
+        self._class_colors = list(colors)
+        self._refresh_help()
+
     def setup_channels(self, channel_names: list) -> None:
         """Rebuild controls for a freshly loaded block."""
-        # Remove old widgets (keep the trailing stretch).
+        # Flush any pending debounced save NOW, before clearing widgets, so
+        # that adjustments made on the previous block are persisted and can be
+        # restored for the incoming block.
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._save_prefs()
+
         while self._inner_layout.count() > 1:
             item = self._inner_layout.takeAt(0)
             if item.widget():
@@ -356,7 +366,6 @@ class ChannelControlsPanel(QWidget):
         for name in channel_names:
             widget = ChannelControlWidget(name, self._viewer, parent=self._inner)
 
-            # Initialise slider bounds from the napari layer's current range.
             if self._viewer is not None:
                 try:
                     layer = self._viewer.layers[name]
@@ -365,8 +374,7 @@ class ChannelControlsPanel(QWidget):
                 except (KeyError, AttributeError):
                     pass
 
-            # Restore saved prefs BEFORE connecting save-triggers so that
-            # restoring does not schedule a redundant write.
+            # Restore saved prefs BEFORE connecting save-triggers.
             if name in saved:
                 ch = saved[name]
                 if "color" in ch:
@@ -374,7 +382,6 @@ class ChannelControlsPanel(QWidget):
                 if "range_lo" in ch and "range_hi" in ch:
                     widget.apply_range(ch["range_lo"], ch["range_hi"])
 
-            # Connect for future auto-saves.
             widget.lut_changed.connect(lambda *_: self._schedule_save())
             widget.range_changed.connect(lambda *_: self._schedule_save())
 
@@ -384,12 +391,51 @@ class ChannelControlsPanel(QWidget):
             self._widgets[name] = widget
 
     # ------------------------------------------------------------------
+    # Help text
+    # ------------------------------------------------------------------
+
+    def _refresh_help(self) -> None:
+        classes = self._class_names
+        colors  = self._class_colors
+        if not classes and self._config is not None:
+            classes = self._config.classes
+            colors  = self._config.class_colors
+        if not classes:
+            classes = ["Class 1", "Class 2", "Class 3"]
+            colors  = ["#22AA44", "#2266FF", "#FF6622"]
+
+        lines = ["<b>Labels</b> — press key to annotate<br>"]
+        for i, (name, color) in enumerate(zip(classes, colors), start=1):
+            lines.append(
+                f"&nbsp;&nbsp;<b>{i}</b> — "
+                f"<span style='color:{color};'>&#9632;</span> {name}<br>"
+            )
+        lines.append(
+            "&nbsp;&nbsp;— <span style='color:#777777;'>&#9632;</span> Unannotated<br>"
+        )
+        lines += [
+            "<br>",
+            "<b>Navigation</b><br>",
+            "&nbsp;&nbsp;<b>↑ / ↓</b> — previous / next block<br>",
+            "&nbsp;&nbsp;<b>Space</b> — start / stop Z auto-play<br>",
+            "&nbsp;&nbsp;<b>R</b> — reset view<br>",
+            "&nbsp;&nbsp;<b>Backspace</b> — undo annotation<br>",
+            "&nbsp;&nbsp;<b>Alt+1..7</b> — toggle channel visibility<br>",
+            "<br>",
+            "<b>Channel tools</b><br>",
+            "&nbsp;&nbsp;Click a colour swatch to set LUT<br>",
+            "&nbsp;&nbsp;<b>Auto</b> — 1st–99.9th percentile range<br>",
+            "&nbsp;&nbsp;<b>−</b> / <b>+</b> — adjust auto-play speed",
+        ]
+        self._info_label.setText("".join(lines))
+
+    # ------------------------------------------------------------------
     # Prefs persistence (internal)
     # ------------------------------------------------------------------
 
     def _schedule_save(self) -> None:
         if self._prefs_file is not None:
-            self._save_timer.start()  # restarts the 600 ms window
+            self._save_timer.start()
 
     def _load_prefs(self) -> dict:
         if self._prefs_file is None:

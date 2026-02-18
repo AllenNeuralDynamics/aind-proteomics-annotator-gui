@@ -89,3 +89,28 @@ def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCach
 
     _cache.put(block_id, arrays)
     return block_id, arrays
+
+
+@thread_worker
+def preload_block_worker(block_infos: list, cache: BlockCache):
+    """Background worker that pre-warms the cache for a list of BlockInfo objects.
+
+    Skips any block_id already present in the cache.  The return value is
+    intentionally ignored by the caller — the side-effect of populating the
+    cache is all that matters.
+
+    Parameters
+    ----------
+    block_infos:
+        Ordered list of :class:`BlockInfo` objects to preload.
+    cache:
+        The shared :class:`BlockCache` instance.
+    """
+    for info in block_infos:
+        if cache.get(info.block_id) is not None:
+            continue  # already cached
+        arrays = []
+        for p in info.tiff_files:
+            arr = tifffile.imread(str(p))
+            arrays.append(np.asarray(arr, dtype=np.float32))
+        cache.put(info.block_id, arrays)

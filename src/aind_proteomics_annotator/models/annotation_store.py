@@ -83,6 +83,13 @@ class AnnotationStore:
         """Return the set of block IDs that have been annotated."""
         return set(self._data.get("annotations", {}).keys())
 
+    def clear_label(self, block_id: str) -> None:
+        """Remove the annotation for *block_id* and persist. No-op if absent."""
+        if block_id in self._data.get("annotations", {}):
+            del self._data["annotations"][block_id]
+            self._data["updated_at"] = _now_iso()
+            self._save()
+
     def _save(self) -> None:
         atomic_write_json(self._filepath, self._data)
 

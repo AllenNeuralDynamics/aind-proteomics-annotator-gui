@@ -9,6 +9,13 @@ extract the ``_qt_viewer`` widget (a QSplitter containing the vispy
 canvas and napari's dimension sliders) and embed it directly inside
 our custom layout via ``layout.addWidget()``.  Qt automatically
 reparents the widget, so napari renders inside our QMainWindow.
+
+Preloading
+----------
+After each block is displayed, a background :func:`preload_block_worker`
+is started for the N-1, N+1, and N+2 neighbours (one back, two forward).
+Results are written directly into the shared :class:`BlockCache` so that
+the next navigation request returns immediately on a cache hit.
 """
 
 from __future__ import annotations
@@ -27,7 +34,11 @@ from qtpy.QtWidgets import (
 
 from aind_proteomics_annotator.gui.overlay_widget import OverlayWidget
 from aind_proteomics_annotator.models.block_registry import BlockInfo
-from aind_proteomics_annotator.workers.tiff_loader import BlockCache, load_block_worker
+from aind_proteomics_annotator.workers.tiff_loader import (
+    BlockCache,
+    load_block_worker,
+    preload_block_worker,
+)
 
 # Default colormaps applied to channels 0, 1, 2, 3, …
 _DEFAULT_COLORMAPS = ["gray", "green", "magenta", "cyan", "red", "yellow", "blue"]
@@ -50,17 +61,19 @@ class ViewerPanel(QWidget):
     loading_finished = Signal()
     channels_loaded = Signal(list)  # list[str] channel names
 
-    def __init__(self, session, config, parent=None) -> None:
+    def __init__(self, session, config, registry=None, parent=None) -> None:
         super().__init__(parent)
         self._session = session
         self._config = config
+        self._registry = registry
         self._current_block_id: str | None = None
         self._block_cache = BlockCache(max_size=config.max_cached_blocks)
+        self._preload_worker = None  # track running preload worker
 
         self._autoplay_timer = QTimer(self)
         self._autoplay_timer.setInterval(config.autoplay_interval_ms)
 
-        self._viewer = None       # napari.Viewer, created in _build_ui
+        self._viewer = None
         self._qt_viewer_widget = None
         self._overlay: OverlayWidget | None = None
 
@@ -78,23 +91,27 @@ class ViewerPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Create napari viewer without showing its own window.
         self._viewer = napari.Viewer(show=False)
 
-        # Extract the underlying Qt widget.  _qt_viewer is a QSplitter
-        # containing the vispy canvas plus napari's dimension slider bar.
+        # Bind 'r' through napari's key system so reset_view works when the
+        # vispy canvas has focus (Qt ApplicationShortcut doesn't reach it).
+        self._viewer.bind_key("r", lambda _: self._viewer.reset_view())
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             self._qt_viewer_widget = self._viewer.window._qt_viewer
 
         layout.addWidget(self._qt_viewer_widget, stretch=1)
 
-        # Overlay label — child of the qt_viewer widget so it sits on top.
-        self._overlay = OverlayWidget(parent=self._qt_viewer_widget)
+        # Overlay uses class colors from config
+        self._overlay = OverlayWidget(
+            parent=self._qt_viewer_widget,
+            color_map=self._config.label_color_map,
+        )
         self._overlay.show()
         self._overlay.raise_()
 
-        # Autoplay controls strip.
+        # Autoplay controls strip
         controls_bar = QWidget()
         controls_bar.setFixedHeight(40)
         ctrl_layout = QHBoxLayout(controls_bar)
@@ -126,7 +143,6 @@ class ViewerPanel(QWidget):
         ctrl_layout.addWidget(self._faster_btn)
 
         ctrl_layout.addStretch()
-
         layout.addWidget(controls_bar)
 
     def _connect_internal(self) -> None:
@@ -162,19 +178,49 @@ class ViewerPanel(QWidget):
         worker.errored.connect(self._on_load_error)
         worker.start()
 
-    def show_label(self, label: int, label_name: str = "") -> None:
-        """Update the top-left overlay with the given annotation label."""
+    def show_label(self, label: "int | None", label_name: str = "") -> None:
+        """Update the top-left overlay. Pass label=None to clear."""
         if self._overlay:
-            self._overlay.set_label(label, label_name)
+            if label is None:
+                self._overlay.clear()
+            else:
+                self._overlay.set_label(label, label_name)
+
+    def update_overlay_progress(
+        self, block_index: int, total: int, unannotated: int
+    ) -> None:
+        """Update the progress line in the overlay."""
+        if self._overlay:
+            self._overlay.set_progress(block_index, total, unannotated)
 
     def show_admin_info(
         self,
-        label: int | None,
-        consensus: int | None,
+        label: "int | None",
+        consensus: "int | None",
         agreement: bool,
     ) -> None:
         if self._overlay:
             self._overlay.set_admin_info(label, consensus, agreement)
+
+    def toggle_autoplay(self) -> None:
+        """Toggle the autoplay timer on/off (Space shortcut)."""
+        self._autoplay_btn.setChecked(not self._autoplay_btn.isChecked())
+
+    def reset_view(self) -> None:
+        """Reset the napari view to fit-to-screen (R shortcut)."""
+        if self._viewer is not None:
+            self._viewer.reset_view()
+
+    def toggle_channel_visibility(self, channel_index: int) -> None:
+        """Toggle visibility of the channel layer at *channel_index* (Alt+N)."""
+        name = f"Channel {channel_index}"
+        if self._viewer is None:
+            return
+        try:
+            layer = self._viewer.layers[name]
+            layer.visible = not layer.visible
+        except KeyError:
+            pass
 
     def set_autoplay_interval(self, ms: int) -> None:
         self._autoplay_timer.setInterval(ms)
@@ -208,7 +254,6 @@ class ViewerPanel(QWidget):
             )
             channel_names.append(name)
 
-        # Default to 2-D (Z-slice) display mode.
         self._viewer.dims.ndisplay = 2
         self._viewer.reset_view()
 
@@ -223,6 +268,41 @@ class ViewerPanel(QWidget):
             self._overlay.set_label(label, class_name)
         else:
             self._overlay.clear()
+
+        # Kick off background preload of neighbour blocks.
+        self._trigger_preload(block_id)
+
+    # ------------------------------------------------------------------
+    # Preloading
+    # ------------------------------------------------------------------
+
+    def _trigger_preload(self, current_block_id: str) -> None:
+        """Start a background worker to pre-warm the cache for N-1, N+1, N+2."""
+        if self._registry is None:
+            return
+        all_blocks = self._registry.all_blocks()
+        try:
+            idx = next(
+                i for i, b in enumerate(all_blocks) if b.block_id == current_block_id
+            )
+        except StopIteration:
+            return
+
+        neighbors = []
+        for offset in (-1, 1, 2):
+            ni = idx + offset
+            if 0 <= ni < len(all_blocks):
+                neighbors.append(all_blocks[ni])
+
+        if not neighbors:
+            return
+
+        worker = preload_block_worker(neighbors, self._block_cache)
+        worker.errored.connect(
+            lambda exc: print(f"[Preload] Error: {exc}")
+        )
+        worker.start()
+        self._preload_worker = worker
 
     # ------------------------------------------------------------------
     # Autoplay
@@ -256,7 +336,7 @@ class ViewerPanel(QWidget):
         if dims.ndim < 1:
             return
         current = dims.current_step[0]
-        z_range = dims.range[0]   # (min, max, step) as floats
+        z_range = dims.range[0]
         max_z = int(z_range[1])
         next_z = (current + 1) % max_z if max_z > 0 else 0
         dims.set_current_step(0, next_z)
