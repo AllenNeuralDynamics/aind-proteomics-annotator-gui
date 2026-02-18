@@ -55,3 +55,7 @@ class AppConfig:
 
     def user_file(self, username: str) -> Path:
         return self.users_dir / f"{username}.json"
+
+    def channel_prefs_file(self, username: str) -> Path:
+        """Per-user file for persisting channel display preferences (LUT + range)."""
+        return self.users_dir / f"{username}_display.json"

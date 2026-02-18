@@ -105,6 +105,9 @@ class MainWindow(QMainWindow):
 
         self._channel_controls = ChannelControlsPanel()
         self._channel_controls.set_viewer(self._viewer_panel.viewer)
+        self._channel_controls.set_prefs_file(
+            self._config.channel_prefs_file(self._session.username)
+        )
         viewer_splitter.addWidget(self._channel_controls)
 
         # Viewer gets ~3× more space than channel controls
