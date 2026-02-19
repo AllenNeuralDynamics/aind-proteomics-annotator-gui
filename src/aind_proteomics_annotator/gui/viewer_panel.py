@@ -154,6 +154,12 @@ class ViewerPanel(QWidget):
         self._focus_cb.setToolTip("Show the target point for this block")
         ctrl_layout.addWidget(self._focus_cb)
 
+        ctrl_layout.addSpacing(10)
+        self._view3d_cb = QCheckBox("3D")
+        self._view3d_cb.setToolTip("Render in 3D")
+        ctrl_layout.addWidget(self._view3d_cb)
+
+
         ctrl_layout.addStretch()
         layout.addWidget(controls_bar)
 
@@ -163,6 +169,7 @@ class ViewerPanel(QWidget):
         self._slower_btn.clicked.connect(self._play_slower)
         self._faster_btn.clicked.connect(self._play_faster)
         self._focus_cb.toggled.connect(self._toggle_focus_points)
+        self._view3d_cb.toggled.connect(self._toggle_3d_view)
 
     # ------------------------------------------------------------------
     # Public API
@@ -370,6 +377,11 @@ class ViewerPanel(QWidget):
         self._show_focus_points = checked
         if self._focus_layer is not None:
             self._focus_layer.visible = checked
+
+    def _toggle_3d_view(self, checked: bool) -> None:
+        if self._viewer is None:
+            return
+        self._viewer.dims.ndisplay = 3 if checked else 2
 
     def _load_focus_points(self) -> None:
         if self._registry is None:
