@@ -181,6 +181,13 @@ class ChannelControlWidget(QGroupBox):
             layer = self._get_layer()
             if layer is not None:
                 layer.contrast_limits_range = [new_min, new_max]
+        elif range_min is None and range_max is None:
+            new_min = lo
+            new_max = hi
+            self._range_slider.setRange(new_min, new_max)
+            layer = self._get_layer()
+            if layer is not None:
+                layer.contrast_limits_range = [new_min, new_max]
         elif lo < cur_min or hi > cur_max:
             new_min = min(lo, cur_min)
             new_max = max(hi, cur_max)
