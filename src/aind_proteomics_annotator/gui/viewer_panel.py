@@ -25,6 +25,7 @@ import warnings
 import numpy as np
 from qtpy.QtCore import QTimer, Qt, Signal
 from qtpy.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -76,9 +77,13 @@ class ViewerPanel(QWidget):
         self._viewer = None
         self._qt_viewer_widget = None
         self._overlay: OverlayWidget | None = None
+        self._focus_points: np.ndarray | None = None
+        self._focus_layer = None
+        self._show_focus_points = True
 
         self._build_ui()
         self._connect_internal()
+        self._load_focus_points()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -143,6 +148,18 @@ class ViewerPanel(QWidget):
         self._faster_btn.setToolTip("Faster (decrease interval by 0.5 s)")
         ctrl_layout.addWidget(self._faster_btn)
 
+        ctrl_layout.addSpacing(10)
+        self._focus_cb = QCheckBox("Focus point")
+        self._focus_cb.setChecked(True)
+        self._focus_cb.setToolTip("Show the target point for this block")
+        ctrl_layout.addWidget(self._focus_cb)
+
+        ctrl_layout.addSpacing(10)
+        self._view3d_cb = QCheckBox("3D")
+        self._view3d_cb.setToolTip("Render in 3D")
+        ctrl_layout.addWidget(self._view3d_cb)
+
+
         ctrl_layout.addStretch()
         layout.addWidget(controls_bar)
 
@@ -151,6 +168,8 @@ class ViewerPanel(QWidget):
         self._autoplay_timer.timeout.connect(self._advance_z_slice)
         self._slower_btn.clicked.connect(self._play_slower)
         self._faster_btn.clicked.connect(self._play_faster)
+        self._focus_cb.toggled.connect(self._toggle_focus_points)
+        self._view3d_cb.toggled.connect(self._toggle_3d_view)
 
     # ------------------------------------------------------------------
     # Public API
@@ -226,6 +245,12 @@ class ViewerPanel(QWidget):
     def set_autoplay_interval(self, ms: int) -> None:
         self._autoplay_timer.setInterval(ms)
 
+    def reload_local_points(self) -> None:
+        """Reload local_points.npy after the data root changes."""
+        self._load_focus_points()
+        if self._current_block_id:
+            self._update_focus_point_layer(self._current_block_id)
+
     # ------------------------------------------------------------------
     # Async load callbacks
     # ------------------------------------------------------------------
@@ -258,6 +283,8 @@ class ViewerPanel(QWidget):
         self._viewer.dims.ndisplay = 2
         self._viewer.reset_view()
 
+        self._update_focus_point_layer(block_id)
+
         self.channels_loaded.emit(channel_names)
 
         # Restore any existing annotation overlay.
@@ -278,7 +305,7 @@ class ViewerPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _trigger_preload(self, current_block_id: str) -> None:
-        """Start a background worker to pre-warm the cache for N-1, N+1, N+2."""
+        """Start a background worker to pre-warm the cache for N-1, N+1..N+3."""
         if self._registry is None:
             return
         all_blocks = self._registry.all_blocks()
@@ -290,7 +317,7 @@ class ViewerPanel(QWidget):
             return
 
         neighbors = []
-        for offset in (-1, 1, 2):
+        for offset in (-1, 1, 2, 3):
             ni = idx + offset
             if 0 <= ni < len(all_blocks):
                 neighbors.append(all_blocks[ni])
@@ -341,3 +368,97 @@ class ViewerPanel(QWidget):
         max_z = int(z_range[1])
         next_z = (current + 1) % max_z if max_z > 0 else 0
         dims.set_current_step(0, next_z)
+
+    # ------------------------------------------------------------------
+    # Focus point overlay
+    # ------------------------------------------------------------------
+
+    def _toggle_focus_points(self, checked: bool) -> None:
+        self._show_focus_points = checked
+        if self._focus_layer is not None:
+            self._focus_layer.visible = checked
+
+    def _toggle_3d_view(self, checked: bool) -> None:
+        if self._viewer is None:
+            return
+        self._viewer.dims.ndisplay = 3 if checked else 2
+
+    def _load_focus_points(self) -> None:
+        if self._registry is None:
+            self._focus_points = None
+            self._set_focus_toggle_enabled(False, "No registry")
+            return
+        path = self._registry.data_root / "local_points.npy"
+        if not path.exists():
+            self._focus_points = None
+            self._set_focus_toggle_enabled(False, "local_points.npy not found")
+            return
+        try:
+            points = np.load(path)
+            if points.ndim != 2 or points.shape[1] != 3:
+                raise ValueError("local_points.npy must be shaped (N_blocks, 3)")
+            self._focus_points = points.astype(float, copy=False)
+            self._set_focus_toggle_enabled(True, "")
+        except Exception as exc:
+            print(f"[ViewerPanel] Could not load local_points.npy: {exc}")
+            self._focus_points = None
+            self._set_focus_toggle_enabled(False, "Invalid local_points.npy")
+
+    def _set_focus_toggle_enabled(self, enabled: bool, reason: str) -> None:
+        if not hasattr(self, "_focus_cb"):
+            return
+        self._focus_cb.setEnabled(enabled)
+        if reason:
+            self._focus_cb.setToolTip(reason)
+        else:
+            self._focus_cb.setToolTip("Show the target point for this block")
+
+    def _update_focus_point_layer(self, block_id: str) -> None:
+        if self._viewer is None or self._registry is None:
+            self._focus_layer = None
+            return
+        if self._focus_points is None:
+            self._focus_layer = None
+            return
+        blocks = self._registry.all_blocks()
+        try:
+            idx = next(i for i, b in enumerate(blocks) if b.block_id == block_id)
+        except StopIteration:
+            self._focus_layer = None
+            return
+        if idx < 0 or idx >= len(self._focus_points):
+            self._focus_layer = None
+            return
+
+        point = self._focus_points[idx]
+        layer = self._viewer.add_points(
+            [point],
+            name="Focus Point",
+            size=10,
+            symbol="x",
+            face_color="#FFFF00",
+            opacity=1.0,
+        )
+        layer.visible = self._show_focus_points
+        self._focus_layer = layer
+        self._center_on_focus_point(point)
+
+    def _center_on_focus_point(self, point: np.ndarray) -> None:
+        if self._viewer is None:
+            return
+        try:
+            z, y, x = float(point[0]), float(point[1]), float(point[2])
+        except Exception:
+            return
+
+        dims = self._viewer.dims
+        if dims.ndim >= 1:
+            dims.set_current_step(0, int(round(z)))
+
+        try:
+            self._viewer.camera.center = (z, y, x)
+        except Exception:
+            try:
+                self._viewer.camera.center = (y, x)
+            except Exception:
+                pass

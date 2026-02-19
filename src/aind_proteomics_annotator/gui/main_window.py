@@ -253,6 +253,7 @@ class MainWindow(QMainWindow):
         """Switch to a new data root directory."""
         self._registry.rescan(path)
         self._viewer_panel._block_cache.clear()
+        self._viewer_panel.reload_local_points()
         blocks = self._registry.all_blocks()
         self._block_list.populate(blocks, self._session.store)
         self._bottom.set_total(self._registry.block_count())

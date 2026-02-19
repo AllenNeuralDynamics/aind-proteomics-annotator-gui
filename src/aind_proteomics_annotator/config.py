@@ -41,8 +41,8 @@ class AppConfig:
     annotations_root: Path
     roles_file: Path
     classes_file: Path
-    autoplay_interval_ms: int = 2000
-    max_cached_blocks: int = 6  # current block + up to 3 preloaded neighbours
+    autoplay_interval_ms: int = 500
+    max_cached_blocks: int = 10 # current block + up to 4 preloaded neighbours
     classes: list = field(
         default_factory=lambda: [c["name"] for c in _DEFAULT_CLASS_DEFS]
     )

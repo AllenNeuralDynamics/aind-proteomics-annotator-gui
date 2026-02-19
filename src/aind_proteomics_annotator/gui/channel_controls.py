@@ -99,6 +99,14 @@ class ChannelControlWidget(QGroupBox):
             btn.clicked.connect(lambda _=False, c=hex_color: self._apply_swatch(c))
             swatch_row.addWidget(btn)
             self._swatches.append((btn, hex_color))
+        self._visible_btn = QPushButton("Hide")
+        self._visible_btn.setCheckable(True)
+        self._visible_btn.setChecked(True)
+        self._visible_btn.setFixedSize(64, 22)
+        self._visible_btn.setToolTip("Toggle channel visibility")
+        self._visible_btn.clicked.connect(self._toggle_visibility)
+        self._set_visibility_style(True)
+        swatch_row.addWidget(self._visible_btn)
         swatch_row.addStretch()
         layout.addLayout(swatch_row)
 
@@ -108,7 +116,7 @@ class ChannelControlWidget(QGroupBox):
         range_header.addStretch()
         self._auto_btn = QPushButton("Auto")
         self._auto_btn.setFixedHeight(22)
-        self._auto_btn.setFixedWidth(45)
+        self._auto_btn.setFixedWidth(64)
         self._auto_btn.setToolTip(
             "Set range to the 1st–99.9th percentile of the current channel data"
         )
@@ -120,6 +128,12 @@ class ChannelControlWidget(QGroupBox):
             self._range_slider = QLabeledDoubleRangeSlider(parent=self)
             self._range_slider.setRange(0.0, 65535.0)
             self._range_slider.setValue((0.0, 65535.0))
+            if hasattr(self._range_slider, "setLabelFormat"):
+                self._range_slider.setLabelFormat("{:.0f}")
+            if hasattr(self._range_slider, "setLabelWidth"):
+                self._range_slider.setLabelWidth(44)
+            if hasattr(self._range_slider, "setDecimals"):
+                self._range_slider.setDecimals(0)
             self._range_slider.valueChanged.connect(self._on_range_changed)
             layout.addWidget(self._range_slider)
         else:
@@ -154,7 +168,13 @@ class ChannelControlWidget(QGroupBox):
             except Exception:
                 pass
 
-    def apply_range(self, lo: float, hi: float) -> None:
+    def apply_range(
+        self,
+        lo: float,
+        hi: float,
+        range_min: float | None = None,
+        range_max: float | None = None,
+    ) -> None:
         """Apply a range to the slider (values clamped to current bounds).
 
         Call this *before* connecting signals so that restoring saved prefs
@@ -164,7 +184,25 @@ class ChannelControlWidget(QGroupBox):
             return
         cur_min = self._range_slider.minimum()
         cur_max = self._range_slider.maximum()
-        if lo < cur_min or hi > cur_max:
+        if range_min is not None or range_max is not None:
+            new_min = cur_min if range_min is None else range_min
+            new_max = cur_max if range_max is None else range_max
+            if lo < new_min:
+                new_min = lo
+            if hi > new_max:
+                new_max = hi
+            self._range_slider.setRange(new_min, new_max)
+            layer = self._get_layer()
+            if layer is not None:
+                layer.contrast_limits_range = [new_min, new_max]
+        elif range_min is None and range_max is None:
+            new_min = lo
+            new_max = hi
+            self._range_slider.setRange(new_min, new_max)
+            layer = self._get_layer()
+            if layer is not None:
+                layer.contrast_limits_range = [new_min, new_max]
+        elif lo < cur_min or hi > cur_max:
             new_min = min(lo, cur_min)
             new_max = max(hi, cur_max)
             self._range_slider.setRange(new_min, new_max)
@@ -188,6 +226,8 @@ class ChannelControlWidget(QGroupBox):
             lo, hi = self._range_slider.value()
             prefs["range_lo"] = float(lo)
             prefs["range_hi"] = float(hi)
+            prefs["range_min"] = float(self._range_slider.minimum())
+            prefs["range_max"] = float(self._range_slider.maximum())
         return prefs
 
     # ------------------------------------------------------------------
@@ -213,6 +253,20 @@ class ChannelControlWidget(QGroupBox):
             btn.setStyleSheet(
                 f"background-color: {hex_color}; border: {border};"
             )
+
+    def _set_visibility_style(self, visible: bool) -> None:
+        if visible:
+            self._visible_btn.setText("Hide")
+            self._visible_btn.setStyleSheet("")
+        else:
+            self._visible_btn.setText("View")
+            self._visible_btn.setStyleSheet("color: #777777;")
+
+    def set_visibility(self, visible: bool) -> None:
+        self._visible_btn.blockSignals(True)
+        self._visible_btn.setChecked(visible)
+        self._set_visibility_style(visible)
+        self._visible_btn.blockSignals(False)
 
     def _apply_swatch(self, color_hex: str) -> None:
         self._color_customized = True
@@ -260,6 +314,15 @@ class ChannelControlWidget(QGroupBox):
             except Exception:
                 pass
         self.range_changed.emit(self._channel_name, lo, hi)
+
+    def _toggle_visibility(self, checked: bool) -> None:
+        self._set_visibility_style(checked)
+        layer = self._get_layer()
+        if layer is not None:
+            try:
+                layer.visible = checked
+            except Exception:
+                pass
 
 
 class ChannelControlsPanel(QWidget):
@@ -373,14 +436,28 @@ class ChannelControlsPanel(QWidget):
                 widget.apply_color(ch["color"])
             has_saved_range = "range_lo" in ch and "range_hi" in ch
             if has_saved_range:
-                widget.apply_range(ch["range_lo"], ch["range_hi"])
+                widget.apply_range(
+                    ch["range_lo"],
+                    ch["range_hi"],
+                    ch.get("range_min"),
+                    ch.get("range_max"),
+                )
 
             if self._viewer is not None:
                 try:
                     layer = self._viewer.layers[name]
-                    lo, hi = layer.contrast_limits_range
+                    widget.set_visibility(bool(getattr(layer, "visible", True)))
                     if not has_saved_range:
-                        widget.update_data_range(float(lo), float(hi))
+                        data = getattr(layer, "data", None)
+                        if data is not None and data.size:
+                            data_min = float(np.nanmin(data))
+                            data_max = float(np.nanmax(data))
+                            if data_max <= data_min:
+                                data_max = data_min + 1.0
+                            widget.update_data_range(data_min, data_max)
+                        else:
+                            lo, hi = layer.contrast_limits_range
+                            widget.update_data_range(float(lo), float(hi))
                 except (KeyError, AttributeError):
                     pass
 
