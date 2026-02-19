@@ -425,8 +425,6 @@ class ViewerPanel(QWidget):
             size=10,
             symbol="x",
             face_color="#FFFF00",
-            edge_color="#000000",
-            edge_width=1,
             opacity=1.0,
         )
         layer.visible = self._show_focus_points
