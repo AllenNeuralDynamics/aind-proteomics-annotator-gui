@@ -154,7 +154,13 @@ class ChannelControlWidget(QGroupBox):
             except Exception:
                 pass
 
-    def apply_range(self, lo: float, hi: float) -> None:
+    def apply_range(
+        self,
+        lo: float,
+        hi: float,
+        range_min: float | None = None,
+        range_max: float | None = None,
+    ) -> None:
         """Apply a range to the slider (values clamped to current bounds).
 
         Call this *before* connecting signals so that restoring saved prefs
@@ -164,7 +170,18 @@ class ChannelControlWidget(QGroupBox):
             return
         cur_min = self._range_slider.minimum()
         cur_max = self._range_slider.maximum()
-        if lo < cur_min or hi > cur_max:
+        if range_min is not None or range_max is not None:
+            new_min = cur_min if range_min is None else range_min
+            new_max = cur_max if range_max is None else range_max
+            if lo < new_min:
+                new_min = lo
+            if hi > new_max:
+                new_max = hi
+            self._range_slider.setRange(new_min, new_max)
+            layer = self._get_layer()
+            if layer is not None:
+                layer.contrast_limits_range = [new_min, new_max]
+        elif lo < cur_min or hi > cur_max:
             new_min = min(lo, cur_min)
             new_max = max(hi, cur_max)
             self._range_slider.setRange(new_min, new_max)
@@ -188,6 +205,8 @@ class ChannelControlWidget(QGroupBox):
             lo, hi = self._range_slider.value()
             prefs["range_lo"] = float(lo)
             prefs["range_hi"] = float(hi)
+            prefs["range_min"] = float(self._range_slider.minimum())
+            prefs["range_max"] = float(self._range_slider.maximum())
         return prefs
 
     # ------------------------------------------------------------------
@@ -373,7 +392,12 @@ class ChannelControlsPanel(QWidget):
                 widget.apply_color(ch["color"])
             has_saved_range = "range_lo" in ch and "range_hi" in ch
             if has_saved_range:
-                widget.apply_range(ch["range_lo"], ch["range_hi"])
+                widget.apply_range(
+                    ch["range_lo"],
+                    ch["range_hi"],
+                    ch.get("range_min"),
+                    ch.get("range_max"),
+                )
 
             if self._viewer is not None:
                 try:
