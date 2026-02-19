@@ -116,7 +116,7 @@ class ChannelControlWidget(QGroupBox):
         range_header.addStretch()
         self._auto_btn = QPushButton("Auto")
         self._auto_btn.setFixedHeight(22)
-        self._auto_btn.setFixedWidth(45)
+        self._auto_btn.setFixedWidth(64)
         self._auto_btn.setToolTip(
             "Set range to the 1st–99.9th percentile of the current channel data"
         )
@@ -128,6 +128,12 @@ class ChannelControlWidget(QGroupBox):
             self._range_slider = QLabeledDoubleRangeSlider(parent=self)
             self._range_slider.setRange(0.0, 65535.0)
             self._range_slider.setValue((0.0, 65535.0))
+            if hasattr(self._range_slider, "setLabelFormat"):
+                self._range_slider.setLabelFormat("{:.0f}")
+            if hasattr(self._range_slider, "setLabelWidth"):
+                self._range_slider.setLabelWidth(44)
+            if hasattr(self._range_slider, "setDecimals"):
+                self._range_slider.setDecimals(0)
             self._range_slider.valueChanged.connect(self._on_range_changed)
             layout.addWidget(self._range_slider)
         else:
