@@ -32,6 +32,10 @@ class BlockRegistry:
         self._data_root = Path(data_root)
         self._blocks: list[BlockInfo] = []
 
+    @property
+    def data_root(self) -> Path:
+        return self._data_root
+
     def scan(self) -> None:
         """Populate the block list from the filesystem."""
         self._blocks = []
