@@ -99,6 +99,14 @@ class ChannelControlWidget(QGroupBox):
             btn.clicked.connect(lambda _=False, c=hex_color: self._apply_swatch(c))
             swatch_row.addWidget(btn)
             self._swatches.append((btn, hex_color))
+        self._visible_btn = QPushButton("Hide")
+        self._visible_btn.setCheckable(True)
+        self._visible_btn.setChecked(True)
+        self._visible_btn.setFixedSize(64, 22)
+        self._visible_btn.setToolTip("Toggle channel visibility")
+        self._visible_btn.clicked.connect(self._toggle_visibility)
+        self._set_visibility_style(True)
+        swatch_row.addWidget(self._visible_btn)
         swatch_row.addStretch()
         layout.addLayout(swatch_row)
 
@@ -240,6 +248,20 @@ class ChannelControlWidget(QGroupBox):
                 f"background-color: {hex_color}; border: {border};"
             )
 
+    def _set_visibility_style(self, visible: bool) -> None:
+        if visible:
+            self._visible_btn.setText("Hide")
+            self._visible_btn.setStyleSheet("")
+        else:
+            self._visible_btn.setText("View")
+            self._visible_btn.setStyleSheet("color: #777777;")
+
+    def set_visibility(self, visible: bool) -> None:
+        self._visible_btn.blockSignals(True)
+        self._visible_btn.setChecked(visible)
+        self._set_visibility_style(visible)
+        self._visible_btn.blockSignals(False)
+
     def _apply_swatch(self, color_hex: str) -> None:
         self._color_customized = True
         self._current_color = color_hex
@@ -286,6 +308,15 @@ class ChannelControlWidget(QGroupBox):
             except Exception:
                 pass
         self.range_changed.emit(self._channel_name, lo, hi)
+
+    def _toggle_visibility(self, checked: bool) -> None:
+        self._set_visibility_style(checked)
+        layer = self._get_layer()
+        if layer is not None:
+            try:
+                layer.visible = checked
+            except Exception:
+                pass
 
 
 class ChannelControlsPanel(QWidget):
@@ -409,9 +440,18 @@ class ChannelControlsPanel(QWidget):
             if self._viewer is not None:
                 try:
                     layer = self._viewer.layers[name]
-                    lo, hi = layer.contrast_limits_range
+                    widget.set_visibility(bool(getattr(layer, "visible", True)))
                     if not has_saved_range:
-                        widget.update_data_range(float(lo), float(hi))
+                        data = getattr(layer, "data", None)
+                        if data is not None and data.size:
+                            data_min = float(np.nanmin(data))
+                            data_max = float(np.nanmax(data))
+                            if data_max <= data_min:
+                                data_max = data_min + 1.0
+                            widget.update_data_range(data_min, data_max)
+                        else:
+                            lo, hi = layer.contrast_limits_range
+                            widget.update_data_range(float(lo), float(hi))
                 except (KeyError, AttributeError):
                     pass
 
