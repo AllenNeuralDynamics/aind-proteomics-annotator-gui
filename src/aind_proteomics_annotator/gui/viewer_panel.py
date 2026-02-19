@@ -298,7 +298,7 @@ class ViewerPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _trigger_preload(self, current_block_id: str) -> None:
-        """Start a background worker to pre-warm the cache for N-1, N+1, N+2."""
+        """Start a background worker to pre-warm the cache for N-1, N+1..N+3."""
         if self._registry is None:
             return
         all_blocks = self._registry.all_blocks()
@@ -310,7 +310,7 @@ class ViewerPanel(QWidget):
             return
 
         neighbors = []
-        for offset in (-1, 1, 2):
+        for offset in (-1, 1, 2, 3):
             ni = idx + offset
             if 0 <= ni < len(all_blocks):
                 neighbors.append(all_blocks[ni])

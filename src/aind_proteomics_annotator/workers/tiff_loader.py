@@ -72,8 +72,8 @@ def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCach
     Yields / Returns
     ----------------
     tuple[str, list[np.ndarray]]
-        (block_id, list_of_channel_arrays).  Each array has shape (Z, Y, X),
-        dtype float32.
+        (block_id, list_of_channel_arrays).  Each array has shape (Z, Y, X)
+        in the source dtype.
     """
     _cache = cache if cache is not None else _default_cache
 
@@ -84,8 +84,7 @@ def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCach
     arrays = []
     for p in tiff_paths:
         arr = tifffile.imread(str(p))
-        arr = np.asarray(arr, dtype=np.float32)
-        arrays.append(arr)
+        arrays.append(np.asarray(arr))
 
     _cache.put(block_id, arrays)
     return block_id, arrays
@@ -112,5 +111,5 @@ def preload_block_worker(block_infos: list, cache: BlockCache):
         arrays = []
         for p in info.tiff_files:
             arr = tifffile.imread(str(p))
-            arrays.append(np.asarray(arr, dtype=np.float32))
+            arrays.append(np.asarray(arr))
         cache.put(info.block_id, arrays)
