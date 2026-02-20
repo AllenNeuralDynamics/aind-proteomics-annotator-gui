@@ -266,19 +266,37 @@ class ViewerPanel(QWidget):
 
     def _display_block(self, block_id: str, arrays: list) -> None:
         """Replace napari layers with the loaded channel arrays."""
-        self._viewer.layers.clear()
-
+        channel_layers = [
+            l for l in list(self._viewer.layers) if l.name.startswith("Channel ")
+        ]
         channel_names: list[str] = []
-        for i, arr in enumerate(arrays):
-            name = f"Channel {i}"
-            cmap = _DEFAULT_COLORMAPS[i % len(_DEFAULT_COLORMAPS)]
-            self._viewer.add_image(
-                arr,
-                name=name,
-                colormap=cmap,
-                blending="additive",
-            )
-            channel_names.append(name)
+
+        if len(channel_layers) == len(arrays):
+            # Fast path: update layer data in-place to avoid full reconstruction.
+            for layer, arr in zip(channel_layers, arrays):
+                layer.data = arr
+                channel_names.append(layer.name)
+            # Remove the stale focus point layer; _update_focus_point_layer re-adds it.
+            if self._focus_layer is not None:
+                try:
+                    self._viewer.layers.remove(self._focus_layer)
+                except Exception:
+                    pass
+                self._focus_layer = None
+        else:
+            # Slow path: channel count changed — rebuild all layers from scratch.
+            self._viewer.layers.clear()
+            self._focus_layer = None
+            for i, arr in enumerate(arrays):
+                name = f"Channel {i}"
+                cmap = _DEFAULT_COLORMAPS[i % len(_DEFAULT_COLORMAPS)]
+                self._viewer.add_image(
+                    arr,
+                    name=name,
+                    colormap=cmap,
+                    blending="additive",
+                )
+                channel_names.append(name)
 
         self._viewer.dims.ndisplay = 2
         self._viewer.reset_view()
