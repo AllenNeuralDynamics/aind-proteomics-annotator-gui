@@ -57,8 +57,11 @@ _SWATCH_COLORS: list[tuple[str, str]] = [
     ("#FFFF00", "Yellow"),
 ]
 
-_SWATCH_SELECTED_BORDER = "2px solid #FFFFFF"
+_SWATCH_SELECTED_BORDER = "3px solid #FFFFFF"
 _SWATCH_DEFAULT_BORDER  = "1px solid #555555"
+_SWATCH_SIZE = 36  # px – large enough to be an obvious click target
+
+_GROUPBOX_TITLE_BASE = "font-size: 15px; font-weight: bold;"
 
 
 class ChannelControlWidget(QGroupBox):
@@ -81,17 +84,21 @@ class ChannelControlWidget(QGroupBox):
         self._current_color: str | None = None  # None = use napari default
         self._color_customized = False
 
+        self._apply_title_style(None)  # default title color
+
         layout = QVBoxLayout(self)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
 
         # LUT swatch row
         swatch_row = QHBoxLayout()
-        swatch_row.setSpacing(3)
-        swatch_row.addWidget(QLabel("LUT:"))
+        swatch_row.setSpacing(4)
+        lut_label = QLabel("LUT:")
+        lut_label.setStyleSheet("font-size: 13px;")
+        swatch_row.addWidget(lut_label)
         self._swatches: list[tuple[QPushButton, str]] = []
         for hex_color, tip in _SWATCH_COLORS:
             btn = QPushButton()
-            btn.setFixedSize(22, 22)
+            btn.setFixedSize(_SWATCH_SIZE, _SWATCH_SIZE)
             btn.setToolTip(tip)
             btn.setStyleSheet(
                 f"background-color: {hex_color}; border: {_SWATCH_DEFAULT_BORDER};"
@@ -102,7 +109,8 @@ class ChannelControlWidget(QGroupBox):
         self._visible_btn = QPushButton("Hide")
         self._visible_btn.setCheckable(True)
         self._visible_btn.setChecked(True)
-        self._visible_btn.setFixedSize(64, 22)
+        self._visible_btn.setFixedSize(64, _SWATCH_SIZE)
+        self._visible_btn.setStyleSheet("font-size: 13px;")
         self._visible_btn.setToolTip("Toggle channel visibility")
         self._visible_btn.clicked.connect(self._toggle_visibility)
         self._set_visibility_style(True)
@@ -112,11 +120,18 @@ class ChannelControlWidget(QGroupBox):
 
         # Range header: label + Auto button
         range_header = QHBoxLayout()
-        range_header.addWidget(QLabel("Range:"))
+        range_label = QLabel("Range:")
+        range_label.setStyleSheet("font-size: 13px;")
+        range_header.addWidget(range_label)
+        type_hint = QLabel("<i>click value to type</i>")
+        type_hint.setStyleSheet("font-size: 11px; color: #888888;")
+        type_hint.setToolTip("Click on the min or max value label to type a number directly")
+        range_header.addWidget(type_hint)
         range_header.addStretch()
         self._auto_btn = QPushButton("Auto")
-        self._auto_btn.setFixedHeight(22)
+        self._auto_btn.setFixedHeight(_SWATCH_SIZE)
         self._auto_btn.setFixedWidth(64)
+        self._auto_btn.setStyleSheet("font-size: 13px;")
         self._auto_btn.setToolTip(
             "Set range to the 1st–99.9th percentile of the current channel data"
         )
@@ -128,10 +143,11 @@ class ChannelControlWidget(QGroupBox):
             self._range_slider = QLabeledDoubleRangeSlider(parent=self)
             self._range_slider.setRange(0.0, 65535.0)
             self._range_slider.setValue((0.0, 65535.0))
+            self._range_slider.setToolTip("Click the min/max labels to type a value")
             if hasattr(self._range_slider, "setLabelFormat"):
                 self._range_slider.setLabelFormat("{:.0f}")
             if hasattr(self._range_slider, "setLabelWidth"):
-                self._range_slider.setLabelWidth(44)
+                self._range_slider.setLabelWidth(56)
             if hasattr(self._range_slider, "setDecimals"):
                 self._range_slider.setDecimals(0)
             self._range_slider.valueChanged.connect(self._on_range_changed)
@@ -160,6 +176,7 @@ class ChannelControlWidget(QGroupBox):
         self._color_customized = True
         self._current_color = color_hex
         self._update_swatch_highlight(color_hex)
+        self._apply_title_style(color_hex)
         layer = self._get_layer()
         if layer is not None:
             try:
@@ -234,6 +251,17 @@ class ChannelControlWidget(QGroupBox):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _apply_title_style(self, color_hex: str | None) -> None:
+        """Set the groupbox title font size and optionally colorize it."""
+        if color_hex:
+            self.setStyleSheet(
+                f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} color: {color_hex}; }}"
+            )
+        else:
+            self.setStyleSheet(
+                f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} }}"
+            )
+
     def _get_layer(self):
         if self._viewer is None:
             return None
@@ -272,6 +300,7 @@ class ChannelControlWidget(QGroupBox):
         self._color_customized = True
         self._current_color = color_hex
         self._update_swatch_highlight(color_hex)
+        self._apply_title_style(color_hex)
         layer = self._get_layer()
         if layer is not None:
             try:
@@ -363,7 +392,7 @@ class ChannelControlsPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         header = QLabel("Channel Controls")
-        header.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        header.setStyleSheet("font-weight: bold; font-size: 18px; padding: 6px;")
         outer.addWidget(header)
 
         self._scroll = QScrollArea()
@@ -389,7 +418,7 @@ class ChannelControlsPanel(QWidget):
         self._info_label = QLabel()
         self._info_label.setWordWrap(True)
         self._info_label.setTextFormat(Qt.RichText)
-        self._info_label.setStyleSheet("font-size: 11px; padding: 2px;")
+        self._info_label.setStyleSheet("font-size: 14px; padding: 2px;")
         info_layout.addWidget(self._info_label)
         outer.addWidget(info_box)
 

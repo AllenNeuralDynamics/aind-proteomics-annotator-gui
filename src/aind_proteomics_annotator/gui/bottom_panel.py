@@ -56,9 +56,10 @@ class BottomPanel(QWidget):
     def hide_loading(self) -> None:
         self._status.setText("")
 
-    def set_current_block(self, block_id: str) -> None:
+    def set_current_block(self, block_id: str, display_name: str = None) -> None:
+        name = display_name if display_name else block_id
         self._instructions.setText(
-            f"Block: {block_id}  |  ↑/↓ navigate  |  1 2 3 annotate  |  Space play/stop  |  R reset  |  Bksp undo"
+            f"Block: {name}  |  ↑/↓ navigate  |  1 2 3 annotate  |  Space play/stop  |  R reset  |  Bksp undo"
         )
 
     def set_total(self, total: int) -> None:

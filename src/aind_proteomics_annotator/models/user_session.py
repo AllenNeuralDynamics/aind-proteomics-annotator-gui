@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from aind_proteomics_annotator.models.annotation_store import (
     AnnotationStore,
     FinalLabelStore,
 )
 from aind_proteomics_annotator.utils.atomic_io import read_json
+
+if TYPE_CHECKING:
+    from aind_proteomics_annotator.models.block_registry import BlockRegistry
 
 
 class UserSession:
@@ -18,17 +23,22 @@ class UserSession:
         The username entered at startup.
     config:
         The application configuration (paths, settings).
+    registry:
+        The block registry for resolving absolute paths.
     """
 
-    def __init__(self, username: str, config) -> None:
+    def __init__(self, username: str, config, registry: "BlockRegistry") -> None:
         self.username = username
         self.config = config
         self.is_admin: bool = False
         self.store = AnnotationStore(
             filepath=config.user_file(username),
             username=username,
+            registry=registry,
         )
-        self.final_label_store = FinalLabelStore(config.final_labels_file)
+        self.final_label_store = FinalLabelStore(
+            config.final_labels_file, registry=registry
+        )
 
     def load_or_create(self) -> None:
         """Prepare the session: create directories, load data, check admin."""
