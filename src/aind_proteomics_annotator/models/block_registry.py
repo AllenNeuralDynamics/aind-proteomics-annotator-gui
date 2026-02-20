@@ -37,17 +37,29 @@ class BlockRegistry:
         return self._data_root
 
     def scan(self) -> None:
-        """Populate the block list from the filesystem."""
+        """Populate the block list from the filesystem (recursive)."""
         self._blocks = []
         if not self._data_root.exists():
             return
 
-        for entry in sorted(self._data_root.iterdir()):
+        # Recursive scan using rglob
+        for entry in sorted(self._data_root.rglob("*")):
             if entry.is_dir() and _BLOCK_PATTERN.match(entry.name):
                 tiffs = sorted(entry.glob("*.tiff")) + sorted(entry.glob("*.tif"))
+
+                # Compute relative path from data_root
+                try:
+                    rel_path = entry.relative_to(self._data_root)
+                    parent_rel = str(rel_path.parent) if rel_path.parent != Path(".") else ""
+                    block_id = str(rel_path) if parent_rel else entry.name
+                except ValueError:
+                    # Shouldn't happen, but fallback to name only
+                    block_id = entry.name
+                    parent_rel = ""
+
                 self._blocks.append(
                     BlockInfo(
-                        block_id=entry.name,
+                        block_id=block_id,
                         path=entry,
                         tiff_files=tiffs,
                     )
@@ -63,6 +75,20 @@ class BlockRegistry:
             if b.block_id == block_id:
                 return b
         return None
+
+    def get_absolute_parent_path(self, block_id: str) -> str:
+        """Return the absolute path to the parent directory of *block_id*.
+
+        This is used as the key for storing annotations.
+        Always returns an absolute path, even if data_root was relative.
+        """
+        block = self.get_block(block_id)
+        if block is None:
+            # Fallback: use data_root if block not found
+            return str(self._data_root.resolve())
+
+        # Return absolute path of the block's parent directory
+        return str(block.path.parent.resolve())
 
     def block_count(self) -> int:
         return len(self._blocks)

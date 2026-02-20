@@ -31,8 +31,12 @@ def main() -> None:
 
     username = dialog.username()
 
+    # --- Block discovery (must happen before session to resolve absolute paths) ---
+    registry = BlockRegistry(config.data_root)
+    registry.scan()
+
     # --- Session ---
-    session = UserSession(username=username, config=config)
+    session = UserSession(username=username, config=config, registry=registry)
     try:
         session.load_or_create()
     except Exception as exc:
@@ -42,10 +46,6 @@ def main() -> None:
             f"Could not initialise annotation storage:\n{exc}",
         )
         sys.exit(1)
-
-    # --- Block discovery ---
-    registry = BlockRegistry(config.data_root)
-    registry.scan()
 
     # --- Main window ---
     window = MainWindow(session=session, config=config, registry=registry)
