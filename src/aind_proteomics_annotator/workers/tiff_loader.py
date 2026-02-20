@@ -13,6 +13,7 @@ worker.start()
 
 from __future__ import annotations
 
+import concurrent.futures
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,11 @@ class BlockCache:
 _default_cache = BlockCache()
 
 
+def _load_channel(path: Path) -> np.ndarray:
+    """Load a single TIFF file and return a C-contiguous array."""
+    return np.ascontiguousarray(tifffile.imread(str(path)))
+
+
 @thread_worker
 def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCache] = None):
     """Background worker that loads all channels for a block.
@@ -81,10 +87,8 @@ def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCach
     if cached is not None:
         return block_id, cached
 
-    arrays = []
-    for p in tiff_paths:
-        arr = tifffile.imread(str(p))
-        arrays.append(np.asarray(arr))
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        arrays = list(executor.map(_load_channel, tiff_paths))
 
     _cache.put(block_id, arrays)
     return block_id, arrays
@@ -108,8 +112,6 @@ def preload_block_worker(block_infos: list, cache: BlockCache):
     for info in block_infos:
         if cache.get(info.block_id) is not None:
             continue  # already cached
-        arrays = []
-        for p in info.tiff_files:
-            arr = tifffile.imread(str(p))
-            arrays.append(np.asarray(arr))
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            arrays = list(executor.map(_load_channel, info.tiff_files))
         cache.put(info.block_id, arrays)

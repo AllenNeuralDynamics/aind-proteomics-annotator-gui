@@ -17,8 +17,15 @@ Each entry must have "name" and "color" (hex):
         {"name": "Class 1", "color": "#22AA44"},
         {"name": "Class 2", "color": "#2266FF"},
         {"name": "Class 3", "color": "#FF6622"}
+      ],
+      "channel_names": [
+        "DAPI",
+        "NeuN",
+        "GFAP"
       ]
     }
+
+If channel_names is omitted, channels are named "Channel 0", "Channel 1", etc.
 """
 
 import json
@@ -49,6 +56,7 @@ class AppConfig:
     class_colors: list = field(
         default_factory=lambda: [c["color"] for c in _DEFAULT_CLASS_DEFS]
     )
+    channel_names: list = field(default_factory=list)
 
     @classmethod
     def from_environment(cls) -> "AppConfig":
@@ -63,7 +71,7 @@ class AppConfig:
         classes_file = Path(
             os.environ.get("ANNOTATOR_CLASSES_FILE", default_classes)
         )
-        class_defs = cls._load_class_defs(classes_file)
+        class_defs, channel_names = cls._load_config_file(classes_file)
         return cls(
             data_root=Path(
                 os.environ.get("ANNOTATOR_DATA_ROOT", "./data/blocks")
@@ -75,20 +83,32 @@ class AppConfig:
             classes_file=classes_file,
             classes=[c["name"] for c in class_defs],
             class_colors=[c["color"] for c in class_defs],
+            channel_names=channel_names,
         )
 
     @staticmethod
-    def _load_class_defs(path: Path) -> list:
-        """Load class definitions from *path*, falling back to built-in defaults."""
+    def _load_config_file(path: Path) -> tuple[list, list]:
+        """Load class definitions and channel names from *path*, falling back to built-in defaults.
+
+        Returns:
+            tuple: (class_defs, channel_names)
+        """
+        channel_names = []
         try:
             if path.exists():
                 raw = json.loads(path.read_text(encoding="utf-8"))
+
+                # Load channel names if present
+                if "channel_names" in raw and isinstance(raw["channel_names"], list):
+                    channel_names = raw["channel_names"]
+
+                # Load class definitions
                 entries = raw.get("classes", [])
                 if entries and isinstance(entries[0], dict):
-                    return entries
+                    return entries, channel_names
                 if entries and isinstance(entries[0], str):
                     # Name-only list — assign default colours
-                    return [
+                    class_defs = [
                         {
                             "name": n,
                             "color": _DEFAULT_CLASS_DEFS[i]["color"]
@@ -97,9 +117,10 @@ class AppConfig:
                         }
                         for i, n in enumerate(entries)
                     ]
+                    return class_defs, channel_names
         except Exception:
             pass
-        return list(_DEFAULT_CLASS_DEFS)
+        return list(_DEFAULT_CLASS_DEFS), channel_names
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -109,6 +130,16 @@ class AppConfig:
     def label_color_map(self) -> dict:
         """Return {label_int: hex_color} for all configured classes."""
         return {i + 1: color for i, color in enumerate(self.class_colors)}
+
+    def get_channel_name(self, index: int) -> str:
+        """Return the channel name for a given index.
+
+        If channel_names is configured and has an entry at *index*, return it.
+        Otherwise, return "Channel {index}".
+        """
+        if index < len(self.channel_names):
+            return self.channel_names[index]
+        return f"Channel {index}"
 
     @property
     def users_dir(self) -> Path:
