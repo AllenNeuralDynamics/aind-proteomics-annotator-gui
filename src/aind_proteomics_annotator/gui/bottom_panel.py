@@ -29,19 +29,20 @@ class BottomPanel(QWidget):
         layout.setContentsMargins(8, 0, 8, 0)
 
         self._instructions = QLabel(self._BASE_INSTRUCTIONS)
-        self._instructions.setStyleSheet("font-size: 11px;")
+        self._instructions.setStyleSheet("font-size: 18px;")
         layout.addWidget(self._instructions)
 
         layout.addStretch()
 
         self._status = QLabel("")
-        self._status.setStyleSheet("color: #88AAFF; font-style: italic;")
+        self._status.setStyleSheet("color: #88AAFF; font-style: italic; font-size: 18px;")
         layout.addWidget(self._status)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, self._total)
         self._progress.setValue(0)
         self._progress.setFixedWidth(220)
+        self._progress.setStyleSheet("font-size: 18px;")
         self._progress.setFormat("%v / %m annotated")
         layout.addWidget(self._progress)
 

@@ -233,7 +233,7 @@ class ViewerPanel(QWidget):
 
     def toggle_channel_visibility(self, channel_index: int) -> None:
         """Toggle visibility of the channel layer at *channel_index* (Alt+N)."""
-        name = f"Channel {channel_index}"
+        name = self._config.get_channel_name(channel_index)
         if self._viewer is None:
             return
         try:
@@ -267,7 +267,7 @@ class ViewerPanel(QWidget):
     def _display_block(self, block_id: str, arrays: list) -> None:
         """Replace napari layers with the loaded channel arrays."""
         channel_layers = [
-            l for l in list(self._viewer.layers) if l.name.startswith("Channel ")
+            l for l in list(self._viewer.layers) if not l.name.startswith("Focus")
         ]
         channel_names: list[str] = []
 
@@ -288,7 +288,7 @@ class ViewerPanel(QWidget):
             self._viewer.layers.clear()
             self._focus_layer = None
             for i, arr in enumerate(arrays):
-                name = f"Channel {i}"
+                name = self._config.get_channel_name(i)
                 cmap = _DEFAULT_COLORMAPS[i % len(_DEFAULT_COLORMAPS)]
                 self._viewer.add_image(
                     arr,

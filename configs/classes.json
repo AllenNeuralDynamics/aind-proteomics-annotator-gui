@@ -3,5 +3,10 @@
     {"name": "Inhibitory", "color": "#22AA44"},
     {"name": "Excitatory", "color": "#2266FF"},
     {"name": "Unknown", "color": "#FF6622"}
+  ],
+  "channel_names": [
+    "488",
+    "561",
+    "638"
   ]
 }
