@@ -77,7 +77,7 @@ class ViewerPanel(QWidget):
         self._viewer = None
         self._qt_viewer_widget = None
         self._overlay: OverlayWidget | None = None
-        self._focus_points: np.ndarray | None = None
+        self._focus_points: dict[str, np.ndarray] = {}  # parent_path -> (N,3) array
         self._focus_layer = None
         self._show_focus_points = True
 
@@ -355,14 +355,14 @@ class ViewerPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _play_slower(self) -> None:
-        """Increase the autoplay interval by 500 ms (play slower), max 10 s."""
-        new_ms = min(10_000, self._autoplay_timer.interval() + 500)
+        """Increase the autoplay interval by 100 ms (play slower), max 10 s."""
+        new_ms = min(10_000, self._autoplay_timer.interval() + 100)
         self._autoplay_timer.setInterval(new_ms)
         self._interval_label.setText(f"({new_ms / 1000:.1f}s/frame)")
 
     def _play_faster(self) -> None:
-        """Decrease the autoplay interval by 500 ms (play faster), min 200 ms."""
-        new_ms = max(200, self._autoplay_timer.interval() - 500)
+        """Decrease the autoplay interval by 100 ms (play faster), min 50 ms."""
+        new_ms = max(50, self._autoplay_timer.interval() - 100)
         self._autoplay_timer.setInterval(new_ms)
         self._interval_label.setText(f"({new_ms / 1000:.1f}s/frame)")
 
@@ -402,25 +402,38 @@ class ViewerPanel(QWidget):
         self._viewer.dims.ndisplay = 3 if checked else 2
 
     def _load_focus_points(self) -> None:
+        self._focus_points = {}
         if self._registry is None:
-            self._focus_points = None
             self._set_focus_toggle_enabled(False, "No registry")
             return
-        path = self._registry.data_root / "local_points.npy"
-        if not path.exists():
-            self._focus_points = None
-            self._set_focus_toggle_enabled(False, "local_points.npy not found")
-            return
-        try:
-            points = np.load(path)
-            if points.ndim != 2 or points.shape[1] != 3:
-                raise ValueError("local_points.npy must be shaped (N_blocks, 3)")
-            self._focus_points = points.astype(float, copy=False)
-            self._set_focus_toggle_enabled(True, "")
-        except Exception as exc:
-            print(f"[ViewerPanel] Could not load local_points.npy: {exc}")
-            self._focus_points = None
-            self._set_focus_toggle_enabled(False, "Invalid local_points.npy")
+
+        # Collect unique parent folders across all blocks
+        parent_folders: set[Path] = set()
+        for block in self._registry.all_blocks():
+            parent_folders.add(block.path.parent)
+
+        # Also check data_root itself (for direct blocks folder case)
+        parent_folders.add(self._registry.data_root)
+
+        any_loaded = False
+        for folder in parent_folders:
+            npy_path = folder / "local_points.npy"
+            if not npy_path.exists():
+                continue
+            try:
+                points = np.load(npy_path)
+                if points.ndim != 2 or points.shape[1] != 3:
+                    print(
+                        f"[ViewerPanel] Skipping {npy_path}: "
+                        f"expected shape (N, 3), got {points.shape}"
+                    )
+                    continue
+                self._focus_points[str(folder.resolve())] = points.astype(float, copy=False)
+                any_loaded = True
+            except Exception as exc:
+                print(f"[ViewerPanel] Could not load {npy_path}: {exc}")
+
+        self._set_focus_toggle_enabled(any_loaded, "" if any_loaded else "local_points.npy not found")
 
     def _set_focus_toggle_enabled(self, enabled: bool, reason: str) -> None:
         if not hasattr(self, "_focus_cb"):
@@ -435,20 +448,38 @@ class ViewerPanel(QWidget):
         if self._viewer is None or self._registry is None:
             self._focus_layer = None
             return
-        if self._focus_points is None:
-            self._focus_layer = None
-            return
-        blocks = self._registry.all_blocks()
-        try:
-            idx = next(i for i, b in enumerate(blocks) if b.block_id == block_id)
-        except StopIteration:
-            self._focus_layer = None
-            return
-        if idx < 0 or idx >= len(self._focus_points):
+        if not self._focus_points:
             self._focus_layer = None
             return
 
-        point = self._focus_points[idx]
+        block = self._registry.get_block(block_id)
+        if block is None:
+            self._focus_layer = None
+            return
+
+        # Find local_points.npy for this block's parent folder
+        parent_key = str(block.path.parent.resolve())
+        points_array = self._focus_points.get(parent_key)
+        if points_array is None:
+            self._focus_layer = None
+            return
+
+        # Find the block's index within its parent folder (sorted order)
+        sibling_blocks = sorted(
+            [b for b in self._registry.all_blocks() if b.path.parent.resolve() == block.path.parent.resolve()],
+            key=lambda b: b.block_id,
+        )
+        try:
+            idx = next(i for i, b in enumerate(sibling_blocks) if b.block_id == block_id)
+        except StopIteration:
+            self._focus_layer = None
+            return
+
+        if idx >= len(points_array):
+            self._focus_layer = None
+            return
+
+        point = points_array[idx]
         layer = self._viewer.add_points(
             [point],
             name="Focus Point",
@@ -470,8 +501,10 @@ class ViewerPanel(QWidget):
             return
 
         dims = self._viewer.dims
+        # Start the Z-slice at 0 so the user sees the volume from the beginning,
+        # not jumping into the middle of the stack at the focus Z position.
         if dims.ndim >= 1:
-            dims.set_current_step(0, int(round(z)))
+            dims.set_current_step(0, 0)
 
         try:
             self._viewer.camera.center = (z, y, x)
