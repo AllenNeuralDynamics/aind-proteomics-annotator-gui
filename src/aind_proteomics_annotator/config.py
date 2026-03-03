@@ -157,5 +157,22 @@ class AppConfig:
         return self.users_dir / f"{username}.json"
 
     def channel_prefs_file(self, username: str) -> Path:
-        """Per-user file for persisting channel display preferences (LUT + range)."""
+        """Per-user file for persisting channel display preferences (LUT + range).
+
+        .. deprecated::
+            Use :meth:`channel_prefs_file_for_dataset` so settings are stored
+            per dataset, not globally per user.
+        """
         return self.users_dir / f"{username}_display.json"
+
+    def channel_prefs_file_for_dataset(self, username: str, data_root: Path) -> Path:
+        """Return a prefs file path unique to *username* + *data_root* dataset.
+
+        Uses a short MD5 hash of the resolved absolute path so settings for
+        different datasets never collide, but are stable across sessions as
+        long as the filesystem path doesn't change.
+        """
+        import hashlib
+
+        path_hash = hashlib.md5(str(Path(data_root).resolve()).encode()).hexdigest()[:10]
+        return self.users_dir / f"{username}_display_{path_hash}.json"

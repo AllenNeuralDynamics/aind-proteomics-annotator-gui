@@ -444,24 +444,35 @@ class ViewerPanel(QWidget):
         else:
             self._focus_cb.setToolTip("Show the target point for this block")
 
+    def _remove_all_focus_layers(self) -> None:
+        """Remove every layer whose name starts with 'Focus' from the viewer."""
+        if self._viewer is None:
+            return
+        stale = [l for l in list(self._viewer.layers) if l.name.startswith("Focus")]
+        for layer in stale:
+            try:
+                self._viewer.layers.remove(layer)
+            except Exception:
+                pass
+        self._focus_layer = None
+
     def _update_focus_point_layer(self, block_id: str) -> None:
+        # Always clear every stale focus layer first to prevent duplicates.
+        self._remove_all_focus_layers()
+
         if self._viewer is None or self._registry is None:
-            self._focus_layer = None
             return
         if not self._focus_points:
-            self._focus_layer = None
             return
 
         block = self._registry.get_block(block_id)
         if block is None:
-            self._focus_layer = None
             return
 
         # Find local_points.npy for this block's parent folder
         parent_key = str(block.path.parent.resolve())
         points_array = self._focus_points.get(parent_key)
         if points_array is None:
-            self._focus_layer = None
             return
 
         # Find the block's index within its parent folder (sorted order)
@@ -472,11 +483,9 @@ class ViewerPanel(QWidget):
         try:
             idx = next(i for i, b in enumerate(sibling_blocks) if b.block_id == block_id)
         except StopIteration:
-            self._focus_layer = None
             return
 
         if idx >= len(points_array):
-            self._focus_layer = None
             return
 
         point = points_array[idx]

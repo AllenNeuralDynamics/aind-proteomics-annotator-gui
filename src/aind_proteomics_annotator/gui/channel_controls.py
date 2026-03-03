@@ -57,11 +57,26 @@ _SWATCH_COLORS: list[tuple[str, str]] = [
     ("#FFFF00", "Yellow"),
 ]
 
-_SWATCH_SELECTED_BORDER = "3px solid #FFFFFF"
-_SWATCH_DEFAULT_BORDER  = "1px solid #555555"
+# Default colours that mirror viewer_panel._DEFAULT_COLORMAPS, mapped to hex so
+# swatches and titles show the right colour even before the user picks anything.
+_DEFAULT_CHANNEL_COLORS = [
+    "#FFFFFF",  # gray   → white swatch
+    "#00FF00",  # green
+    "#FF00FF",  # magenta
+    "#00FFFF",  # cyan
+    "#FF0000",  # red
+    "#FFFF00",  # yellow
+    "#0000FF",  # blue
+]
+
+_SWATCH_SELECTED_BORDER = "4px solid #FFFFFF"
+_SWATCH_DEFAULT_BORDER  = "1px solid #444444"
 _SWATCH_SIZE = 36  # px – large enough to be an obvious click target
 
 _GROUPBOX_TITLE_BASE = "font-size: 15px; font-weight: bold;"
+# Extra padding shrinks the colour area so the border is clearly visible
+_SWATCH_SELECTED_EXTRA = "padding: 2px;"
+_SWATCH_DEFAULT_EXTRA  = "padding: 0px;"
 
 
 class ChannelControlWidget(QGroupBox):
@@ -171,6 +186,14 @@ class ChannelControlWidget(QGroupBox):
             layer.contrast_limits_range = [data_min, data_max]
             layer.contrast_limits = [data_min, data_max]
 
+    def set_initial_color_hint(self, color_hex: str) -> None:
+        """Highlight the matching swatch and colorize the title for the default
+        napari colormap, without marking the colour as user-customised (so it
+        won't be saved to prefs as an explicit choice).
+        """
+        self._update_swatch_highlight(color_hex)
+        self._apply_title_style(color_hex)
+
     def apply_color(self, color_hex: str) -> None:
         """Apply a LUT colour by hex string (used when restoring saved prefs)."""
         self._color_customized = True
@@ -273,13 +296,11 @@ class ChannelControlWidget(QGroupBox):
     def _update_swatch_highlight(self, selected_hex: str) -> None:
         norm = selected_hex.lower()
         for btn, hex_color in self._swatches:
-            border = (
-                _SWATCH_SELECTED_BORDER
-                if hex_color.lower() == norm
-                else _SWATCH_DEFAULT_BORDER
-            )
+            is_selected = hex_color.lower() == norm
+            border = _SWATCH_SELECTED_BORDER if is_selected else _SWATCH_DEFAULT_BORDER
+            extra  = _SWATCH_SELECTED_EXTRA  if is_selected else _SWATCH_DEFAULT_EXTRA
             btn.setStyleSheet(
-                f"background-color: {hex_color}; border: {border};"
+                f"background-color: {hex_color}; border: {border}; {extra}"
             )
 
     def _set_visibility_style(self, visible: bool) -> None:
@@ -436,6 +457,21 @@ class ChannelControlsPanel(QWidget):
         """Set the JSON file used to persist channel display preferences."""
         self._prefs_file = Path(path)
 
+    def switch_dataset(self, prefs_file: Path) -> None:
+        """Switch to a different dataset's prefs file.
+
+        Flushes any pending save for the current dataset, then resets the
+        in-memory cache so the next :meth:`setup_channels` call loads from the
+        new file instead of carrying over the previous dataset's settings.
+        """
+        # Flush outstanding save for the old dataset immediately.
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._save_prefs()
+
+        self._prefs_file = Path(prefs_file)
+        self._live_prefs = {}  # force fresh load from new file on next setup
+
     def set_class_info(self, classes: list, colors: list) -> None:
         """Rebuild the help panel using configurable class names and colours."""
         self._class_names = list(classes)
@@ -456,13 +492,18 @@ class ChannelControlsPanel(QWidget):
         # restored automatically.
         saved = self._live_prefs if self._live_prefs else self._load_prefs()
 
-        for name in channel_names:
+        for idx, name in enumerate(channel_names):
             widget = ChannelControlWidget(name, self._viewer, parent=self._inner)
 
             # Restore saved prefs BEFORE connecting save-triggers.
             ch = saved.get(name, {})
             if "color" in ch:
                 widget.apply_color(ch["color"])
+            else:
+                # No saved choice yet — show the default napari colormap colour
+                # so the swatch highlight and title are populated from the start.
+                default_color = _DEFAULT_CHANNEL_COLORS[idx % len(_DEFAULT_CHANNEL_COLORS)]
+                widget.set_initial_color_hint(default_color)
             has_saved_range = "range_lo" in ch and "range_hi" in ch
             if has_saved_range:
                 widget.apply_range(

@@ -121,7 +121,9 @@ class MainWindow(QMainWindow):
         self._channel_controls = ChannelControlsPanel(config=self._config)
         self._channel_controls.set_viewer(self._viewer_panel.viewer)
         self._channel_controls.set_prefs_file(
-            self._config.channel_prefs_file(self._session.username)
+            self._config.channel_prefs_file_for_dataset(
+                self._session.username, self._registry.data_root
+            )
         )
         self._channel_controls.set_class_info(
             self._config.classes,
@@ -254,6 +256,14 @@ class MainWindow(QMainWindow):
         self._registry.rescan(path)
         self._viewer_panel._block_cache.clear()
         self._viewer_panel.reload_local_points()
+        # Switch channel-control prefs to the new dataset's file so LUT/range
+        # settings from the previous dataset don't bleed into this one, and
+        # any previously saved settings for this dataset are restored.
+        self._channel_controls.switch_dataset(
+            self._config.channel_prefs_file_for_dataset(
+                self._session.username, self._registry.data_root
+            )
+        )
         blocks = self._registry.all_blocks()
         self._block_list.populate(blocks, self._session.store)
         self._bottom.set_total(self._registry.block_count())

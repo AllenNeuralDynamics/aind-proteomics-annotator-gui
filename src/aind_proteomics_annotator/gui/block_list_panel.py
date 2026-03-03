@@ -68,6 +68,7 @@ class BlockListPanel(QWidget):
 
         # Navigation / workflow options
         self._auto_advance_cb = QCheckBox("Auto-advance after labeling")
+        self._auto_advance_cb.setChecked(True)
         self._auto_advance_cb.setStyleSheet("font-size: 11px;")
         layout.addWidget(self._auto_advance_cb)
 
