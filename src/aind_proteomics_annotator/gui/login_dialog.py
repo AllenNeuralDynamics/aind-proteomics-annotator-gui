@@ -3,13 +3,8 @@
 import re
 
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QLabel,
-    QLineEdit,
-    QVBoxLayout,
-)
+from qtpy.QtWidgets import (QDialog, QDialogButtonBox, QLabel, QLineEdit,
+                            QVBoxLayout)
 
 _VALID_USERNAME = re.compile(r"^\w+$")
 
@@ -35,15 +30,11 @@ class LoginDialog(QDialog):
         self._username_edit.textChanged.connect(self._validate)
         layout.addWidget(self._username_edit)
 
-        self._hint = QLabel(
-            "Use letters, digits, or underscores (no spaces)."
-        )
+        self._hint = QLabel("Use letters, digits, or underscores (no spaces).")
         self._hint.setStyleSheet("color: grey; font-size: 11px;")
         layout.addWidget(self._hint)
 
-        self._buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self._ok_btn = self._buttons.button(QDialogButtonBox.Ok)
         self._ok_btn.setEnabled(False)
         self._buttons.accepted.connect(self.accept)

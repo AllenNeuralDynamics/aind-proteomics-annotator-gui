@@ -49,7 +49,7 @@ class AppConfig:
     roles_file: Path
     classes_file: Path
     autoplay_interval_ms: int = 100
-    max_cached_blocks: int = 10 # current block + up to 4 preloaded neighbours
+    max_cached_blocks: int = 10  # current block + up to 4 preloaded neighbours
     classes: list = field(
         default_factory=lambda: [c["name"] for c in _DEFAULT_CLASS_DEFS]
     )
@@ -68,14 +68,10 @@ class AppConfig:
         # relative paths set via ANNOTATOR_ROLES_FILE resolve correctly even
         # when the app is launched from a subdirectory (e.g. scripts/).
         default_classes = str(roles_file.parent / "classes.json")
-        classes_file = Path(
-            os.environ.get("ANNOTATOR_CLASSES_FILE", default_classes)
-        )
+        classes_file = Path(os.environ.get("ANNOTATOR_CLASSES_FILE", default_classes))
         class_defs, channel_names = cls._load_config_file(classes_file)
         return cls(
-            data_root=Path(
-                os.environ.get("ANNOTATOR_DATA_ROOT", "./data/blocks")
-            ),
+            data_root=Path(os.environ.get("ANNOTATOR_DATA_ROOT", "./data/blocks")),
             annotations_root=Path(
                 os.environ.get("ANNOTATOR_ANNOTATIONS_ROOT", "./annotations")
             ),
@@ -111,9 +107,11 @@ class AppConfig:
                     class_defs = [
                         {
                             "name": n,
-                            "color": _DEFAULT_CLASS_DEFS[i]["color"]
-                            if i < len(_DEFAULT_CLASS_DEFS)
-                            else "#AAAAAA",
+                            "color": (
+                                _DEFAULT_CLASS_DEFS[i]["color"]
+                                if i < len(_DEFAULT_CLASS_DEFS)
+                                else "#AAAAAA"
+                            ),
                         }
                         for i, n in enumerate(entries)
                     ]
@@ -174,5 +172,7 @@ class AppConfig:
         """
         import hashlib
 
-        path_hash = hashlib.md5(str(Path(data_root).resolve()).encode()).hexdigest()[:10]
+        path_hash = hashlib.md5(str(Path(data_root).resolve()).encode()).hexdigest()[
+            :10
+        ]
         return self.users_dir / f"{username}_display_{path_hash}.json"

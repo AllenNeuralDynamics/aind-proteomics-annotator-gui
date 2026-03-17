@@ -50,7 +50,9 @@ class BlockRegistry:
                 # Compute relative path from data_root
                 try:
                     rel_path = entry.relative_to(self._data_root)
-                    parent_rel = str(rel_path.parent) if rel_path.parent != Path(".") else ""
+                    parent_rel = (
+                        str(rel_path.parent) if rel_path.parent != Path(".") else ""
+                    )
                     block_id = str(rel_path) if parent_rel else entry.name
                 except ValueError:
                     # Shouldn't happen, but fallback to name only

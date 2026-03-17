@@ -1,11 +1,6 @@
-"""Bottom status bar: instructions, loading status, and annotation progress."""
+"""Bottom status bar: instructions and accumulative annotation count."""
 
-from qtpy.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QProgressBar,
-    QWidget,
-)
+from qtpy.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 
 class BottomPanel(QWidget):
@@ -13,8 +8,7 @@ class BottomPanel(QWidget):
 
     Contains:
     - A dynamic instruction/status label on the left.
-    - A transient "Loading…" indicator.
-    - A QProgressBar showing annotation progress on the right.
+    - A plain annotation count label on the right (accumulative total).
     """
 
     _BASE_INSTRUCTIONS = "Select a block  |  ↑/↓ navigate  |  1 2 3 annotate  |  Space play/stop  |  R reset view  |  Backspace undo"
@@ -22,7 +16,6 @@ class BottomPanel(QWidget):
     def __init__(self, total_blocks: int, parent=None) -> None:
         super().__init__(parent)
         self._total = max(total_blocks, 1)
-        self._unannotated = self._total
         self.setFixedHeight(40)
 
         layout = QHBoxLayout(self)
@@ -34,27 +27,21 @@ class BottomPanel(QWidget):
 
         layout.addStretch()
 
-        self._status = QLabel("")
-        self._status.setStyleSheet("color: #88AAFF; font-style: italic; font-size: 18px;")
-        layout.addWidget(self._status)
-
-        self._progress = QProgressBar()
-        self._progress.setRange(0, self._total)
-        self._progress.setValue(0)
-        self._progress.setFixedWidth(220)
-        self._progress.setStyleSheet("font-size: 18px;")
-        self._progress.setFormat("%v / %m annotated")
-        layout.addWidget(self._progress)
+        self._count_label = QLabel("0 annotated")
+        self._count_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #AADDFF;"
+        )
+        layout.addWidget(self._count_label)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def show_loading(self) -> None:
-        self._status.setText("Loading…")
+        pass  # loading indicator removed
 
     def hide_loading(self) -> None:
-        self._status.setText("")
+        pass
 
     def set_current_block(self, block_id: str, display_name: str = None) -> None:
         name = display_name if display_name else block_id
@@ -65,9 +52,6 @@ class BottomPanel(QWidget):
     def set_total(self, total: int) -> None:
         """Update total block count (called after Browse changes the data root)."""
         self._total = max(total, 1)
-        self._progress.setRange(0, self._total)
 
     def update_progress(self, annotated_count: int) -> None:
-        self._progress.setValue(annotated_count)
-        remaining = self._total - annotated_count
-        self._progress.setFormat(f"%v / %m annotated  ·  {remaining} remaining")
+        self._count_label.setText(f"{annotated_count} annotated")

@@ -32,14 +32,8 @@ from __future__ import annotations
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
-from qtpy.QtWidgets import (
-    QMainWindow,
-    QShortcut,
-    QSplitter,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import (QMainWindow, QShortcut, QSplitter, QTabWidget,
+                            QVBoxLayout, QWidget)
 
 from aind_proteomics_annotator.gui.block_list_panel import BlockListPanel
 from aind_proteomics_annotator.gui.bottom_panel import BottomPanel
@@ -66,7 +60,6 @@ class MainWindow(QMainWindow):
         self._config = config
         self._registry = registry
 
-        self.setWindowTitle(f"Proteomics Annotator  —  {session.username}")
         self.resize(1600, 950)
 
         self._build_ui()
@@ -79,6 +72,12 @@ class MainWindow(QMainWindow):
             self._session.store,
         )
         self._bottom.set_total(self._registry.block_count())
+        if self._registry.block_count() > 0:
+            self._update_dataset_display(config.data_root)
+        else:
+            self._block_list.set_dataset(None)
+            self.setWindowTitle(f"Proteomics Annotator  —  {session.username}")
+        self._block_list.set_recent_datasets(self._get_annotated_datasets())
 
     # ------------------------------------------------------------------
     # UI construction
@@ -193,7 +192,9 @@ class MainWindow(QMainWindow):
         for ch_idx in range(1, 8):
             _sc(
                 QKeySequence(Qt.ALT | getattr(Qt, f"Key_{ch_idx}")),
-                lambda idx=ch_idx - 1: self._viewer_panel.toggle_channel_visibility(idx),
+                lambda idx=ch_idx - 1: self._viewer_panel.toggle_channel_visibility(
+                    idx
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -266,13 +267,56 @@ class MainWindow(QMainWindow):
         )
         blocks = self._registry.all_blocks()
         self._block_list.populate(blocks, self._session.store)
+        self._block_list.select_first_block()
         self._bottom.set_total(self._registry.block_count())
         annotated_count = len(self._session.store.annotated_block_ids())
         self._bottom.update_progress(annotated_count)
+        self._update_dataset_display(self._registry.data_root)
+        self._block_list.set_recent_datasets(self._get_annotated_datasets())
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _get_annotated_datasets(self) -> list:
+        """Return sorted list of dicts with path, annotated count, and total blocks.
+
+        Each dict has keys: "path" (str), "annotated" (int), "total" (int).
+        """
+        import re
+        from pathlib import Path
+
+        _block_re = re.compile(r"^block_\d{4}$")
+        annotations = self._session.store._data.get("annotations", {})
+        result = []
+        for path_str in sorted(p for p in annotations.keys() if p):
+            blocks_in_store = annotations[path_str]
+            annotated = sum(
+                1 for v in blocks_in_store.values() if v.get("label") is not None
+            )
+            # Count block dirs on filesystem
+            p = Path(path_str)
+            try:
+                total = sum(
+                    1 for d in p.iterdir() if d.is_dir() and _block_re.match(d.name)
+                )
+            except OSError:
+                total = len(blocks_in_store)
+            result.append({"path": path_str, "annotated": annotated, "total": total})
+        return result
+
+    def _update_dataset_display(self, data_root) -> None:
+        """Update the window title and block-list header with the dataset name."""
+        from pathlib import Path
+
+        from aind_proteomics_annotator.gui.block_list_panel import \
+            _dataset_label_from_path
+
+        dataset = _dataset_label_from_path(Path(data_root))
+        self.setWindowTitle(
+            f"Proteomics Annotator  —  {self._session.username}  |  {dataset}"
+        )
+        self._block_list.set_dataset(Path(data_root))
 
     def _update_overlay_progress(self) -> None:
         """Push current block index + remaining counts to the overlay."""

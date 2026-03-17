@@ -10,20 +10,10 @@ from pathlib import Path
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import (
-    QFileDialog,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QPushButton,
-    QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import (QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
+                            QHeaderView, QLabel, QPushButton, QSpinBox,
+                            QTableWidget, QTableWidgetItem, QVBoxLayout,
+                            QWidget)
 
 from aind_proteomics_annotator.utils.atomic_io import read_json
 from aind_proteomics_annotator.utils.consensus import build_consensus_table
@@ -67,6 +57,15 @@ class AdminPanel(QWidget):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
+
+        # Dataset path label — centered at the top
+        self._dataset_path_label = QLabel(str(self._registry.data_root.resolve()))
+        self._dataset_path_label.setAlignment(Qt.AlignCenter)
+        self._dataset_path_label.setStyleSheet(
+            "font-size: 13px; color: #AADDFF; padding: 4px 0px;"
+        )
+        self._dataset_path_label.setWordWrap(True)
+        layout.addWidget(self._dataset_path_label)
 
         # Top control bar
         top_bar = QHBoxLayout()
@@ -118,7 +117,9 @@ class AdminPanel(QWidget):
         self._table = QTableWidget()
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
         self._table.horizontalHeader().setStretchLastSection(False)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._table, stretch=1)
@@ -129,20 +130,40 @@ class AdminPanel(QWidget):
 
     def refresh_data(self) -> None:
         """Re-read all user JSON files from disk and rebuild the table."""
+        self._dataset_path_label.setText(str(self._registry.data_root.resolve()))
         self._all_user_data = {}
         users_dir = self._config.users_dir
         if users_dir.exists():
+            # Build (abs_parent_path, block_name) → relative_block_id lookup
+            # so we can flatten the nested annotation JSON into the flat format
+            # that build_consensus_table expects.
+            block_lookup: dict = {}
+            for block in self._registry.all_blocks():
+                abs_parent = self._registry.get_absolute_parent_path(block.block_id)
+                bname = (
+                    block.block_id.split("/")[-1]
+                    if "/" in block.block_id
+                    else block.block_id
+                )
+                block_lookup[(abs_parent, bname)] = block.block_id
+
             for f in sorted(users_dir.glob("*.json")):
                 data = read_json(f)
-                if data and "annotations" in data:
-                    self._all_user_data[data["username"]] = data["annotations"]
+                if not (data and "annotations" in data):
+                    continue
+                flat: dict = {}
+                for parent_path, blocks in data["annotations"].items():
+                    for block_name, entry in blocks.items():
+                        rel_id = block_lookup.get((parent_path, block_name))
+                        if rel_id is not None:
+                            flat[rel_id] = entry
+                if flat:
+                    self._all_user_data[data["username"]] = flat
 
         self._session.final_label_store.load()
 
         block_ids = [b.block_id for b in self._registry.all_blocks()]
-        self._consensus_rows = build_consensus_table(
-            self._all_user_data, block_ids
-        )
+        self._consensus_rows = build_consensus_table(self._all_user_data, block_ids)
         self._populate_table()
         self._update_stats()
 
@@ -167,7 +188,9 @@ class AdminPanel(QWidget):
             self._table.setItem(row_idx, 0, _make_item(row["block_id"]))
 
             # Consensus
-            consensus_text = str(row["consensus"]) if row["consensus"] is not None else "—"
+            consensus_text = (
+                str(row["consensus"]) if row["consensus"] is not None else "—"
+            )
             self._table.setItem(row_idx, 1, _make_item(consensus_text))
 
             # Final Label
@@ -217,9 +240,7 @@ class AdminPanel(QWidget):
         block_id_item = self._table.item(row, 0)
         if block_id_item:
             self._selected_block_id = block_id_item.text()
-            self._selected_block_display.setText(
-                f"Block: {self._selected_block_id}"
-            )
+            self._selected_block_display.setText(f"Block: {self._selected_block_id}")
 
     def _set_final_label(self) -> None:
         if self._selected_block_id is None:

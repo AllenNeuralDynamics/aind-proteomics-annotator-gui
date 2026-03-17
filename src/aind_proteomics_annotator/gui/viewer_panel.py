@@ -23,23 +23,14 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
-from qtpy.QtCore import QTimer, Qt, Signal
-from qtpy.QtWidgets import (
-    QCheckBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QPushButton,
+                            QVBoxLayout, QWidget)
 
 from aind_proteomics_annotator.gui.overlay_widget import OverlayWidget
 from aind_proteomics_annotator.models.block_registry import BlockInfo
 from aind_proteomics_annotator.workers.tiff_loader import (
-    BlockCache,
-    load_block_worker,
-    preload_block_worker,
-)
+    BlockCache, load_block_worker, preload_block_worker)
 
 # Default colormaps applied to channels 0, 1, 2, 3, …
 _DEFAULT_COLORMAPS = ["gray", "green", "magenta", "cyan", "red", "yellow", "blue"]
@@ -158,7 +149,6 @@ class ViewerPanel(QWidget):
         self._view3d_cb = QCheckBox("3D")
         self._view3d_cb.setToolTip("Render in 3D")
         ctrl_layout.addWidget(self._view3d_cb)
-
 
         ctrl_layout.addStretch()
         layout.addWidget(controls_bar)
@@ -344,9 +334,7 @@ class ViewerPanel(QWidget):
             return
 
         worker = preload_block_worker(neighbors, self._block_cache)
-        worker.errored.connect(
-            lambda exc: print(f"[Preload] Error: {exc}")
-        )
+        worker.errored.connect(lambda exc: print(f"[Preload] Error: {exc}"))
         worker.start()
         self._preload_worker = worker
 
@@ -428,12 +416,16 @@ class ViewerPanel(QWidget):
                         f"expected shape (N, 3), got {points.shape}"
                     )
                     continue
-                self._focus_points[str(folder.resolve())] = points.astype(float, copy=False)
+                self._focus_points[str(folder.resolve())] = points.astype(
+                    float, copy=False
+                )
                 any_loaded = True
             except Exception as exc:
                 print(f"[ViewerPanel] Could not load {npy_path}: {exc}")
 
-        self._set_focus_toggle_enabled(any_loaded, "" if any_loaded else "local_points.npy not found")
+        self._set_focus_toggle_enabled(
+            any_loaded, "" if any_loaded else "local_points.npy not found"
+        )
 
     def _set_focus_toggle_enabled(self, enabled: bool, reason: str) -> None:
         if not hasattr(self, "_focus_cb"):
@@ -477,11 +469,17 @@ class ViewerPanel(QWidget):
 
         # Find the block's index within its parent folder (sorted order)
         sibling_blocks = sorted(
-            [b for b in self._registry.all_blocks() if b.path.parent.resolve() == block.path.parent.resolve()],
+            [
+                b
+                for b in self._registry.all_blocks()
+                if b.path.parent.resolve() == block.path.parent.resolve()
+            ],
             key=lambda b: b.block_id,
         )
         try:
-            idx = next(i for i, b in enumerate(sibling_blocks) if b.block_id == block_id)
+            idx = next(
+                i for i, b in enumerate(sibling_blocks) if b.block_id == block_id
+            )
         except StopIteration:
             return
 

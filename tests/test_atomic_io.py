@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from aind_proteomics_annotator.utils.atomic_io import atomic_write_json, read_json
+from aind_proteomics_annotator.utils.atomic_io import (atomic_write_json,
+                                                       read_json)
 
 
 def test_round_trip(tmp_path: Path) -> None:
