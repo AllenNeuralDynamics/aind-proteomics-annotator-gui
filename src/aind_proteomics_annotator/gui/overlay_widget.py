@@ -68,15 +68,8 @@ class OverlayWidget(QLabel):
         self._set_style(label)
         self._refresh()
 
-    def set_progress(self, block_index: int, total: int, unannotated: int) -> None:
-        """Update the progress line shown below the label text.
-
-        Parameters
-        ----------
-        block_index : 1-based index of the current block.
-        total       : total number of blocks.
-        unannotated : number of blocks not yet annotated.
-        """
+    def set_progress(self, block_index: int, total: int) -> None:
+        """Update the progress line shown below the label text."""
         self._progress_text = f"Block {block_index}/{total}"
         self._refresh()
 

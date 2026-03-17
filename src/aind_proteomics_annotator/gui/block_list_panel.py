@@ -185,6 +185,10 @@ class BlockListPanel(QWidget):
         """Select the first block in the list, if any."""
         if self._list.count() > 0:
             self._list.setCurrentRow(0)
+            item = self._list.item(0)
+            if item:
+                self._list.scrollToItem(item)
+            self._list.setFocus()
 
     def select_next_block(self) -> None:
         """Select the next block (skips annotated ones when the option is on)."""

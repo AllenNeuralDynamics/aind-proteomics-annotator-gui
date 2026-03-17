@@ -273,6 +273,9 @@ class MainWindow(QMainWindow):
         self._bottom.update_progress(annotated_count)
         self._update_dataset_display(self._registry.data_root)
         self._block_list.set_recent_datasets(self._get_annotated_datasets())
+        # Update admin panel path label if the admin tab is present.
+        if hasattr(self, "_admin_panel"):
+            self._admin_panel.refresh_data()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -319,9 +322,7 @@ class MainWindow(QMainWindow):
         self._block_list.set_dataset(Path(data_root))
 
     def _update_overlay_progress(self) -> None:
-        """Push current block index + remaining counts to the overlay."""
+        """Push current block index and total to the overlay."""
         block_index = self._block_list.current_block_index()
         total = self._registry.block_count()
-        annotated = len(self._session.store.annotated_block_ids())
-        unannotated = total - annotated
-        self._viewer_panel.update_overlay_progress(block_index, total, unannotated)
+        self._viewer_panel.update_overlay_progress(block_index, total)

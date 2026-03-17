@@ -71,18 +71,6 @@ _GROUPBOX_TITLE_BASE = "font-size: 15px; font-weight: bold;"
 _SWATCH_SELECTED_EXTRA = "padding: 2px;"
 _SWATCH_DEFAULT_EXTRA = "padding: 0px;"
 
-# Stylesheet fragment applied to QDoubleSpinBox children of ChannelControlWidget.
-# Included in every _apply_title_style call so it's never overwritten.
-_SPINBOX_INPUT_STYLE = (
-    " QDoubleSpinBox {"
-    "  border: 2px solid #888888;"
-    "  border-radius: 3px;"
-    "  background-color: #2a2a2a;"
-    "  padding: 2px 4px;"
-    "  min-width: 52px;"
-    "}"
-)
-
 
 class ChannelControlWidget(QGroupBox):
     """Controls for a single image channel.
@@ -156,20 +144,27 @@ class ChannelControlWidget(QGroupBox):
         layout.addLayout(range_header)
 
         if _HAS_SUPERQT:
+            from superqt.sliders._labeled import EdgeLabelMode, LabelPosition
+
             self._range_slider = QLabeledDoubleRangeSlider(parent=self)
             self._range_slider.setRange(0.0, 65535.0)
             self._range_slider.setValue((0.0, 65535.0))
             self._range_slider.setToolTip("Click the min/max labels to type a value")
-            if hasattr(self._range_slider, "setLabelFormat"):
-                self._range_slider.setLabelFormat("{:.0f}")
-            if hasattr(self._range_slider, "setLabelWidth"):
-                self._range_slider.setLabelWidth(56)
+            # Hide the floating labels above the handles; keep only side edge labels.
+            if hasattr(self._range_slider, "setHandleLabelPosition"):
+                self._range_slider.setHandleLabelPosition(LabelPosition.NoLabel)
+            # Default is LabelIsRange (shows slider bounds, never updates on drag).
+            # LabelIsValue shows current handle positions and updates live.
+            self._range_slider.setEdgeLabelMode(EdgeLabelMode.LabelIsValue)
             if hasattr(self._range_slider, "setDecimals"):
                 self._range_slider.setDecimals(0)
             self._range_slider.valueChanged.connect(self._on_range_changed)
             layout.addWidget(self._range_slider)
             QTimer.singleShot(0, self._style_range_spinboxes)
             QTimer.singleShot(200, self._style_range_spinboxes)
+            # superqt creates handle-label widgets lazily on the first
+            # valueChanged — re-run styling then to hide them immediately.
+            self._range_slider.valueChanged.connect(self._on_first_value_change)
         else:
             layout.addWidget(QLabel("(install superqt for range slider)"))
             self._range_slider = None
@@ -281,37 +276,51 @@ class ChannelControlWidget(QGroupBox):
     # ------------------------------------------------------------------
 
     def _style_range_spinboxes(self) -> None:
-        """Directly style the range slider's spinbox children after the event loop settles."""
+        """Style the edge labels and hide the floating handle labels.
+
+        superqt's SliderLabel extends QLineEdit.  Edge labels (_min_label /
+        _max_label) live in the layout and show current values.  Handle labels
+        (_handle_labels) float above the slider handles — superqt creates them
+        lazily on the first valueChanged event, so we must hide them here too.
+        """
         if self._range_slider is None:
             return
-        from qtpy.QtWidgets import QAbstractSpinBox
+        from qtpy.QtWidgets import QLineEdit
 
-        for sb in self._range_slider.findChildren(QAbstractSpinBox):
-            sb.setStyleSheet(
-                "background-color: #3a3a3a;"
-                "border: 2px solid #666666;"
-                "border-radius: 5px;"
-                "padding: 2px 6px;"
-                "min-width: 52px;"
-                "color: #ffffff;"
-            )
+        # Collect the floating handle labels so we can hide them.
+        handle_labels = set(getattr(self._range_slider, "_handle_labels", []))
+
+        for le in self._range_slider.findChildren(QLineEdit):
+            if le in handle_labels:
+                le.setVisible(False)
+            else:
+                le.setStyleSheet(
+                    "background-color: #3a3a3a;"
+                    "border: 2px solid #888888;"
+                    "border-radius: 4px;"
+                    "padding: 2px 6px;"
+                    "color: #ffffff;"
+                )
+
+    def _on_first_value_change(self, _=None) -> None:
+        """Hide handle labels created lazily on the first valueChanged event.
+
+        Disconnects itself after the first call so it only runs once.
+        """
+        try:
+            self._range_slider.valueChanged.disconnect(self._on_first_value_change)
+        except RuntimeError:
+            pass
+        QTimer.singleShot(0, self._style_range_spinboxes)
 
     def _apply_title_style(self, color_hex: str | None) -> None:
-        """Set the groupbox title style and keep spinbox input-box styling.
-
-        Always includes _SPINBOX_INPUT_STYLE so the QDoubleSpinBox labels
-        inside the range slider retain their border regardless of how many
-        times this method is called (e.g. when a swatch colour is picked).
-        """
+        """Set the groupbox title colour."""
         if color_hex:
             self.setStyleSheet(
                 f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} color: {color_hex}; }}"
-                + _SPINBOX_INPUT_STYLE
             )
         else:
-            self.setStyleSheet(
-                f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} }}" + _SPINBOX_INPUT_STYLE
-            )
+            self.setStyleSheet(f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} }}")
 
     def _get_layer(self):
         if self._viewer is None:

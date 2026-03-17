@@ -196,12 +196,10 @@ class ViewerPanel(QWidget):
             else:
                 self._overlay.set_label(label, label_name)
 
-    def update_overlay_progress(
-        self, block_index: int, total: int, unannotated: int
-    ) -> None:
+    def update_overlay_progress(self, block_index: int, total: int) -> None:
         """Update the progress line in the overlay."""
         if self._overlay:
-            self._overlay.set_progress(block_index, total, unannotated)
+            self._overlay.set_progress(block_index, total)
 
     def show_admin_info(
         self,
