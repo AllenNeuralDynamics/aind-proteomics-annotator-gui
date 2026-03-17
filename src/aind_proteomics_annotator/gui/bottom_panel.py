@@ -1,6 +1,7 @@
 """Bottom status bar: instructions and accumulative annotation count."""
 
-from qtpy.QtWidgets import QHBoxLayout, QLabel, QWidget
+from qtpy.QtCore import Signal
+from qtpy.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 
 class BottomPanel(QWidget):
@@ -12,6 +13,8 @@ class BottomPanel(QWidget):
     """
 
     _BASE_INSTRUCTIONS = "Select a block  |  ↑/↓ navigate  |  1 2 3 annotate  |  Space play/stop  |  R reset view  |  Backspace undo"
+
+    admin_view_requested = Signal()
 
     def __init__(self, total_blocks: int, parent=None) -> None:
         super().__init__(parent)
@@ -32,6 +35,20 @@ class BottomPanel(QWidget):
             "font-size: 18px; font-weight: bold; color: #AADDFF;"
         )
         layout.addWidget(self._count_label)
+
+        self._admin_btn = QPushButton("Admin View")
+        self._admin_btn.setFixedHeight(26)
+        self._admin_btn.setStyleSheet(
+            "font-size: 13px; padding: 0 10px; background: #5a3a7a; color: white;"
+            " border-radius: 4px;"
+        )
+        self._admin_btn.clicked.connect(self.admin_view_requested)
+        self._admin_btn.setVisible(False)
+        layout.addWidget(self._admin_btn)
+
+    def show_admin_button(self) -> None:
+        """Make the Admin View button visible (call for admin users)."""
+        self._admin_btn.setVisible(True)
 
     # ------------------------------------------------------------------
     # Public API

@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         else:
             self._block_list.set_dataset(None)
             self.setWindowTitle(f"Proteomics Annotator  —  {session.username}")
-        self._block_list.set_recent_datasets(self._get_annotated_datasets())
+        self._block_list.set_recent_datasets(self._get_all_datasets())
 
     # ------------------------------------------------------------------
     # UI construction
@@ -138,16 +138,8 @@ class MainWindow(QMainWindow):
         ann_layout.addWidget(viewer_splitter)
         self._tabs.addTab(annotator_widget, "Annotator")
 
-        # Admin tab (only if admin)
-        if self._session.is_admin:
-            from aind_proteomics_annotator.gui.admin_panel import AdminPanel
-
-            self._admin_panel = AdminPanel(
-                config=self._config,
-                registry=self._registry,
-                session=self._session,
-            )
-            self._tabs.addTab(self._admin_panel, "Admin View")
+        # Admin panel instantiated lazily when the button is pressed.
+        self._admin_panel = None
 
         h_splitter.addWidget(self._tabs)
         h_splitter.setStretchFactor(0, 1)
@@ -167,6 +159,9 @@ class MainWindow(QMainWindow):
         self._viewer_panel.channels_loaded.connect(
             self._channel_controls.setup_channels
         )
+        if self._session.is_admin:
+            self._bottom.show_admin_button()
+            self._bottom.admin_view_requested.connect(self._open_admin_view)
 
     def _install_shortcuts(self) -> None:
         """Install all application-wide keyboard shortcuts."""
@@ -272,41 +267,107 @@ class MainWindow(QMainWindow):
         annotated_count = len(self._session.store.annotated_block_ids())
         self._bottom.update_progress(annotated_count)
         self._update_dataset_display(self._registry.data_root)
-        self._block_list.set_recent_datasets(self._get_annotated_datasets())
-        # Update admin panel path label if the admin tab is present.
-        if hasattr(self, "_admin_panel"):
+        self._block_list.set_recent_datasets(self._get_all_datasets())
+        # Refresh admin panel if it's already open.
+        if self._admin_panel is not None:
             self._admin_panel.refresh_data()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_annotated_datasets(self) -> list:
-        """Return sorted list of dicts with path, annotated count, and total blocks.
+    def _open_admin_view(self) -> None:
+        """Open the Admin View in a separate window (create once, reuse after)."""
+        from qtpy.QtWidgets import QDialog, QVBoxLayout
 
-        Each dict has keys: "path" (str), "annotated" (int), "total" (int).
+        from aind_proteomics_annotator.gui.admin_panel import AdminPanel
+
+        if self._admin_panel is None:
+            self._admin_panel = AdminPanel(
+                config=self._config,
+                registry=self._registry,
+                session=self._session,
+            )
+
+        # Wrap in a resizable dialog the first time or if it was closed.
+        if not hasattr(self, "_admin_dialog") or not self._admin_dialog.isVisible():
+            from qtpy.QtCore import Qt
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Admin View")
+            dialog.resize(1100, 700)
+            dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMaximizeButtonHint)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(self._admin_panel)
+            self._admin_dialog = dialog
+
+        self._admin_panel.refresh_data()
+        self._admin_dialog.show()
+        self._admin_dialog.raise_()
+        self._admin_dialog.activateWindow()
+
+    def _get_all_datasets(self) -> list:
+        """Discover all blocks/ directories under the data root and return
+        annotation counts for each.
+
+        Each returned dict has keys: "path" (str), "annotated" (int),
+        "total" (int).  Items with no annotations yet are included (gray in the
+        UI); items partially done are orange; complete items are green.
         """
         import re
-        from pathlib import Path
 
         _block_re = re.compile(r"^block_\d{4}$")
+        data_root = self._registry.data_root
+        scan_root = self._find_scan_root(data_root)
         annotations = self._session.store._data.get("annotations", {})
+
         result = []
-        for path_str in sorted(p for p in annotations.keys() if p):
-            blocks_in_store = annotations[path_str]
+        try:
+            blocks_dirs = sorted(d for d in scan_root.rglob("blocks") if d.is_dir())
+        except OSError:
+            blocks_dirs = [data_root] if data_root.is_dir() else []
+
+        for blocks_dir in blocks_dirs[:200]:
+            path_str = str(blocks_dir.resolve())
+            dataset_ann = annotations.get(path_str, {})
             annotated = sum(
-                1 for v in blocks_in_store.values() if v.get("label") is not None
+                1 for v in dataset_ann.values() if v.get("label") is not None
             )
-            # Count block dirs on filesystem
-            p = Path(path_str)
             try:
                 total = sum(
-                    1 for d in p.iterdir() if d.is_dir() and _block_re.match(d.name)
+                    1
+                    for d in blocks_dir.iterdir()
+                    if d.is_dir() and _block_re.match(d.name)
                 )
             except OSError:
-                total = len(blocks_in_store)
+                total = 0
             result.append({"path": path_str, "annotated": annotated, "total": total})
         return result
+
+    def _find_scan_root(self, data_root) -> "Path":
+        """Walk up the directory tree to find the top-level data directory.
+
+        Looks for the nearest ancestor that directly contains Tile_*
+        sub-directories (indicating it is the root that holds all datasets).
+        Falls back to ``data_root.parent`` if none is found within six levels.
+        """
+        import re
+
+        _tile_re = re.compile(r"tile_", re.IGNORECASE)
+        p = data_root.parent  # start above the blocks/ dir
+        for _ in range(6):
+            parent = p.parent
+            if parent == p:  # filesystem root
+                break
+            try:
+                children = [d.name for d in parent.iterdir() if d.is_dir()]
+                if any(_tile_re.search(name) for name in children):
+                    return parent
+            except OSError:
+                break
+            p = parent
+        return data_root.parent  # fallback
 
     def _update_dataset_display(self, data_root) -> None:
         """Update the window title and block-list header with the dataset name."""

@@ -73,16 +73,18 @@ class BlockListPanel(QWidget):
         header_row.addWidget(self._browse_btn)
         layout.addLayout(header_row)
 
-        # Recent annotated datasets (small list; populated from annotation store)
-        recent_header = QLabel("Annotated datasets")
+        # All discoverable datasets (populated from filesystem scan)
+        recent_header = QLabel("Datasets")
         recent_header.setStyleSheet("font-size: 10px; color: #888888;")
         layout.addWidget(recent_header)
 
         self._recent_list = QListWidget()
-        self._recent_list.setFixedHeight(70)
+        self._recent_list.setMinimumHeight(80)
+        self._recent_list.setMaximumHeight(160)
         self._recent_list.setAlternatingRowColors(False)
         self._recent_list.setToolTip(
-            "Folders where you have previous annotations — click to open"
+            "All discovered datasets — click to open.  "
+            "Green = complete, orange = in progress, gray = not started."
         )
         self._recent_list.itemClicked.connect(self._on_recent_item_clicked)
         self._recent_list.setStyleSheet("font-size: 10px;")
@@ -144,11 +146,13 @@ class BlockListPanel(QWidget):
             self._dataset_label.setText(_dataset_label_from_path(Path(path)))
 
     def set_recent_datasets(self, datasets: list) -> None:
-        """Populate the recent-datasets list from *datasets*.
+        """Populate the datasets list from *datasets*.
 
-        Each entry is either a plain path string or a dict with keys
-        ``"path"`` (str), ``"annotated"`` (int), ``"total"`` (int).
-        Items are colored green when annotated >= total, orange otherwise.
+        Each entry is a dict with keys ``"path"`` (str), ``"annotated"``
+        (int), ``"total"`` (int).  Color coding:
+        - Green  : annotated >= total (complete)
+        - Orange : 0 < annotated < total (in progress)
+        - Gray   : annotated == 0 (not started)
         """
         self._recent_list.clear()
         for entry in datasets:
@@ -157,12 +161,16 @@ class BlockListPanel(QWidget):
                 annotated = entry.get("annotated", 0)
                 total = entry.get("total", 0)
                 count_text = f"  –  {annotated}/{total}"
-                label = _short_path(path_str) + count_text
-                complete = total > 0 and annotated >= total
-                color = QColor("#44CC44") if complete else QColor("#DDAA33")
+                label = _short_path(path_str, n_parts=4) + count_text
+                if total > 0 and annotated >= total:
+                    color = QColor("#44CC44")  # complete
+                elif annotated > 0:
+                    color = QColor("#DDAA33")  # in progress
+                else:
+                    color = QColor("#888888")  # not started
             else:
-                path_str = entry
-                label = _short_path(path_str)
+                path_str = str(entry)
+                label = _short_path(path_str, n_parts=4)
                 color = QColor("#888888")
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, path_str)
