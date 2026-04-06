@@ -68,16 +68,9 @@ class OverlayWidget(QLabel):
         self._set_style(label)
         self._refresh()
 
-    def set_progress(self, block_index: int, total: int, unannotated: int) -> None:
-        """Update the progress line shown below the label text.
-
-        Parameters
-        ----------
-        block_index : 1-based index of the current block.
-        total       : total number of blocks.
-        unannotated : number of blocks not yet annotated.
-        """
-        self._progress_text = f"Block {block_index}/{total}  ·  {unannotated} unannotated"
+    def set_progress(self, block_index: int, total: int) -> None:
+        """Update the progress line shown below the label text."""
+        self._progress_text = f"Block {block_index}/{total}"
         self._refresh()
 
     def set_admin_info(
@@ -119,8 +112,7 @@ class OverlayWidget(QLabel):
 
     def _set_style(self, label: "int | None") -> None:
         color = self._color_map.get(label, _DEFAULT_COLOR)
-        self.setStyleSheet(
-            f"""
+        self.setStyleSheet(f"""
             QLabel {{
                 background-color: rgba(0, 0, 0, 170);
                 color: {color};
@@ -129,5 +121,4 @@ class OverlayWidget(QLabel):
                 padding: 6px 12px;
                 border-radius: 5px;
             }}
-            """
-        )
+            """)

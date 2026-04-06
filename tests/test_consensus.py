@@ -2,10 +2,8 @@
 
 import pytest
 
-from aind_proteomics_annotator.utils.consensus import (
-    build_consensus_table,
-    compute_consensus,
-)
+from aind_proteomics_annotator.utils.consensus import (build_consensus_table,
+                                                       compute_consensus)
 
 
 class TestComputeConsensus:

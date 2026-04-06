@@ -29,19 +29,12 @@ from pathlib import Path
 
 import numpy as np
 from qtpy.QtCore import Qt, QTimer, Signal
-from qtpy.QtWidgets import (
-    QFrame,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import (QFrame, QGroupBox, QHBoxLayout, QLabel,
+                            QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 try:
     from superqt import QLabeledDoubleRangeSlider
+
     _HAS_SUPERQT = True
 except ImportError:
     _HAS_SUPERQT = False
@@ -57,11 +50,26 @@ _SWATCH_COLORS: list[tuple[str, str]] = [
     ("#FFFF00", "Yellow"),
 ]
 
-_SWATCH_SELECTED_BORDER = "3px solid #FFFFFF"
-_SWATCH_DEFAULT_BORDER  = "1px solid #555555"
+# Default colours that mirror viewer_panel._DEFAULT_COLORMAPS, mapped to hex so
+# swatches and titles show the right colour even before the user picks anything.
+_DEFAULT_CHANNEL_COLORS = [
+    "#FFFFFF",  # gray   → white swatch
+    "#00FF00",  # green
+    "#FF00FF",  # magenta
+    "#00FFFF",  # cyan
+    "#FF0000",  # red
+    "#FFFF00",  # yellow
+    "#0000FF",  # blue
+]
+
+_SWATCH_SELECTED_BORDER = "4px solid #000000"
+_SWATCH_DEFAULT_BORDER = "1px solid #444444"
 _SWATCH_SIZE = 36  # px – large enough to be an obvious click target
 
 _GROUPBOX_TITLE_BASE = "font-size: 15px; font-weight: bold;"
+# Extra padding shrinks the colour area so the border is clearly visible
+_SWATCH_SELECTED_EXTRA = "padding: 2px;"
+_SWATCH_DEFAULT_EXTRA = "padding: 0px;"
 
 
 class ChannelControlWidget(QGroupBox):
@@ -74,7 +82,7 @@ class ChannelControlWidget(QGroupBox):
     - A range slider (superqt) that updates the layer's contrast_limits.
     """
 
-    lut_changed = Signal(str, str)            # channel_name, color_hex
+    lut_changed = Signal(str, str)  # channel_name, color_hex
     range_changed = Signal(str, float, float)  # channel_name, lo, hi
 
     def __init__(self, channel_name: str, viewer, parent=None) -> None:
@@ -123,10 +131,6 @@ class ChannelControlWidget(QGroupBox):
         range_label = QLabel("Range:")
         range_label.setStyleSheet("font-size: 13px;")
         range_header.addWidget(range_label)
-        type_hint = QLabel("<i>click value to type</i>")
-        type_hint.setStyleSheet("font-size: 11px; color: #888888;")
-        type_hint.setToolTip("Click on the min or max value label to type a number directly")
-        range_header.addWidget(type_hint)
         range_header.addStretch()
         self._auto_btn = QPushButton("Auto")
         self._auto_btn.setFixedHeight(_SWATCH_SIZE)
@@ -140,18 +144,27 @@ class ChannelControlWidget(QGroupBox):
         layout.addLayout(range_header)
 
         if _HAS_SUPERQT:
+            from superqt.sliders._labeled import EdgeLabelMode, LabelPosition
+
             self._range_slider = QLabeledDoubleRangeSlider(parent=self)
             self._range_slider.setRange(0.0, 65535.0)
             self._range_slider.setValue((0.0, 65535.0))
             self._range_slider.setToolTip("Click the min/max labels to type a value")
-            if hasattr(self._range_slider, "setLabelFormat"):
-                self._range_slider.setLabelFormat("{:.0f}")
-            if hasattr(self._range_slider, "setLabelWidth"):
-                self._range_slider.setLabelWidth(56)
+            # Hide the floating labels above the handles; keep only side edge labels.
+            if hasattr(self._range_slider, "setHandleLabelPosition"):
+                self._range_slider.setHandleLabelPosition(LabelPosition.NoLabel)
+            # Default is LabelIsRange (shows slider bounds, never updates on drag).
+            # LabelIsValue shows current handle positions and updates live.
+            self._range_slider.setEdgeLabelMode(EdgeLabelMode.LabelIsValue)
             if hasattr(self._range_slider, "setDecimals"):
                 self._range_slider.setDecimals(0)
             self._range_slider.valueChanged.connect(self._on_range_changed)
             layout.addWidget(self._range_slider)
+            QTimer.singleShot(0, self._style_range_spinboxes)
+            QTimer.singleShot(200, self._style_range_spinboxes)
+            # superqt creates handle-label widgets lazily on the first
+            # valueChanged — re-run styling then to hide them immediately.
+            self._range_slider.valueChanged.connect(self._on_first_value_change)
         else:
             layout.addWidget(QLabel("(install superqt for range slider)"))
             self._range_slider = None
@@ -170,6 +183,16 @@ class ChannelControlWidget(QGroupBox):
         if layer is not None:
             layer.contrast_limits_range = [data_min, data_max]
             layer.contrast_limits = [data_min, data_max]
+        # Re-apply spinbox styles — superqt resets them when range/value changes.
+        QTimer.singleShot(0, self._style_range_spinboxes)
+
+    def set_initial_color_hint(self, color_hex: str) -> None:
+        """Highlight the matching swatch and colorize the title for the default
+        napari colormap, without marking the colour as user-customised (so it
+        won't be saved to prefs as an explicit choice).
+        """
+        self._update_swatch_highlight(color_hex)
+        self._apply_title_style(color_hex)
 
     def apply_color(self, color_hex: str) -> None:
         """Apply a LUT colour by hex string (used when restoring saved prefs)."""
@@ -181,6 +204,7 @@ class ChannelControlWidget(QGroupBox):
         if layer is not None:
             try:
                 from vispy.color import Colormap
+
                 layer.colormap = Colormap(["black", color_hex])
             except Exception:
                 pass
@@ -251,16 +275,52 @@ class ChannelControlWidget(QGroupBox):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _style_range_spinboxes(self) -> None:
+        """Style the edge labels and hide the floating handle labels.
+
+        superqt's SliderLabel extends QLineEdit.  Edge labels (_min_label /
+        _max_label) live in the layout and show current values.  Handle labels
+        (_handle_labels) float above the slider handles — superqt creates them
+        lazily on the first valueChanged event, so we must hide them here too.
+        """
+        if self._range_slider is None:
+            return
+        from qtpy.QtWidgets import QLineEdit
+
+        # Collect the floating handle labels so we can hide them.
+        handle_labels = set(getattr(self._range_slider, "_handle_labels", []))
+
+        for le in self._range_slider.findChildren(QLineEdit):
+            if le in handle_labels:
+                le.setVisible(False)
+            else:
+                le.setStyleSheet(
+                    "background-color: #3a3a3a;"
+                    "border: 2px solid #888888;"
+                    "border-radius: 4px;"
+                    "padding: 2px 6px;"
+                    "color: #ffffff;"
+                )
+
+    def _on_first_value_change(self, _=None) -> None:
+        """Hide handle labels created lazily on the first valueChanged event.
+
+        Disconnects itself after the first call so it only runs once.
+        """
+        try:
+            self._range_slider.valueChanged.disconnect(self._on_first_value_change)
+        except RuntimeError:
+            pass
+        QTimer.singleShot(0, self._style_range_spinboxes)
+
     def _apply_title_style(self, color_hex: str | None) -> None:
-        """Set the groupbox title font size and optionally colorize it."""
+        """Set the groupbox title colour."""
         if color_hex:
             self.setStyleSheet(
                 f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} color: {color_hex}; }}"
             )
         else:
-            self.setStyleSheet(
-                f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} }}"
-            )
+            self.setStyleSheet(f"QGroupBox::title {{ {_GROUPBOX_TITLE_BASE} }}")
 
     def _get_layer(self):
         if self._viewer is None:
@@ -273,13 +333,11 @@ class ChannelControlWidget(QGroupBox):
     def _update_swatch_highlight(self, selected_hex: str) -> None:
         norm = selected_hex.lower()
         for btn, hex_color in self._swatches:
-            border = (
-                _SWATCH_SELECTED_BORDER
-                if hex_color.lower() == norm
-                else _SWATCH_DEFAULT_BORDER
-            )
+            is_selected = hex_color.lower() == norm
+            border = _SWATCH_SELECTED_BORDER if is_selected else _SWATCH_DEFAULT_BORDER
+            extra = _SWATCH_SELECTED_EXTRA if is_selected else _SWATCH_DEFAULT_EXTRA
             btn.setStyleSheet(
-                f"background-color: {hex_color}; border: {border};"
+                f"background-color: {hex_color}; border: {border}; {extra}"
             )
 
     def _set_visibility_style(self, visible: bool) -> None:
@@ -305,6 +363,7 @@ class ChannelControlWidget(QGroupBox):
         if layer is not None:
             try:
                 from vispy.color import Colormap
+
                 layer.colormap = Colormap(["black", color_hex])
             except Exception as exc:
                 print(f"[ChannelControls] Could not apply colormap: {exc}")
@@ -436,6 +495,21 @@ class ChannelControlsPanel(QWidget):
         """Set the JSON file used to persist channel display preferences."""
         self._prefs_file = Path(path)
 
+    def switch_dataset(self, prefs_file: Path) -> None:
+        """Switch to a different dataset's prefs file.
+
+        Flushes any pending save for the current dataset, then resets the
+        in-memory cache so the next :meth:`setup_channels` call loads from the
+        new file instead of carrying over the previous dataset's settings.
+        """
+        # Flush outstanding save for the old dataset immediately.
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+            self._save_prefs()
+
+        self._prefs_file = Path(prefs_file)
+        self._live_prefs = {}  # force fresh load from new file on next setup
+
     def set_class_info(self, classes: list, colors: list) -> None:
         """Rebuild the help panel using configurable class names and colours."""
         self._class_names = list(classes)
@@ -456,13 +530,20 @@ class ChannelControlsPanel(QWidget):
         # restored automatically.
         saved = self._live_prefs if self._live_prefs else self._load_prefs()
 
-        for name in channel_names:
+        for idx, name in enumerate(channel_names):
             widget = ChannelControlWidget(name, self._viewer, parent=self._inner)
 
             # Restore saved prefs BEFORE connecting save-triggers.
             ch = saved.get(name, {})
             if "color" in ch:
                 widget.apply_color(ch["color"])
+            else:
+                # No saved choice yet — show the default napari colormap colour
+                # so the swatch highlight and title are populated from the start.
+                default_color = _DEFAULT_CHANNEL_COLORS[
+                    idx % len(_DEFAULT_CHANNEL_COLORS)
+                ]
+                widget.set_initial_color_hint(default_color)
             has_saved_range = "range_lo" in ch and "range_hi" in ch
             if has_saved_range:
                 widget.apply_range(
@@ -493,9 +574,7 @@ class ChannelControlsPanel(QWidget):
             widget.lut_changed.connect(lambda *_: self._sync_live_prefs())
             widget.range_changed.connect(lambda *_: self._sync_live_prefs())
 
-            self._inner_layout.insertWidget(
-                self._inner_layout.count() - 1, widget
-            )
+            self._inner_layout.insertWidget(self._inner_layout.count() - 1, widget)
             self._widgets[name] = widget
 
         # Capture the current configuration (saved prefs or auto-range) so
@@ -509,13 +588,13 @@ class ChannelControlsPanel(QWidget):
 
     def _refresh_help(self) -> None:
         classes = self._class_names
-        colors  = self._class_colors
+        colors = self._class_colors
         if not classes and self._config is not None:
             classes = self._config.classes
-            colors  = self._config.class_colors
+            colors = self._config.class_colors
         if not classes:
             classes = ["Class 1", "Class 2", "Class 3"]
-            colors  = ["#22AA44", "#2266FF", "#FF6622"]
+            colors = ["#22AA44", "#2266FF", "#FF6622"]
 
         lines = ["<b>Labels</b> — press key to annotate<br>"]
         for i, (name, color) in enumerate(zip(classes, colors), start=1):
@@ -564,6 +643,7 @@ class ChannelControlsPanel(QWidget):
         if self._prefs_file is None:
             return {}
         from aind_proteomics_annotator.utils.atomic_io import read_json
+
         try:
             data = read_json(self._prefs_file)
             if isinstance(data, dict) and "channel_prefs" in data:
@@ -577,6 +657,7 @@ class ChannelControlsPanel(QWidget):
             return
         prefs = {name: w.get_prefs() for name, w in self._widgets.items()}
         from aind_proteomics_annotator.utils.atomic_io import atomic_write_json
+
         try:
             atomic_write_json(self._prefs_file, {"channel_prefs": prefs})
         except Exception as exc:

@@ -30,9 +30,10 @@ Admin schema (annotations/admin/final_labels.json):
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
-from aind_proteomics_annotator.utils.atomic_io import atomic_write_json, read_json
+from aind_proteomics_annotator.utils.atomic_io import (atomic_write_json,
+                                                       read_json)
 
 if TYPE_CHECKING:
     from aind_proteomics_annotator.models.block_registry import BlockRegistry
@@ -196,9 +197,7 @@ class FinalLabelStore:
                 return parts[0], parts[1]
             return "", block_id
 
-    def set_final_label(
-        self, block_id: str, label: int, admin_username: str
-    ) -> None:
+    def set_final_label(self, block_id: str, label: int, admin_username: str) -> None:
         """Override the final label for *block_id* and persist to disk."""
         parent_path, block_name = self._get_storage_key(block_id)
         if "labels" not in self._data:
@@ -226,16 +225,35 @@ class FinalLabelStore:
     def all_labels(self) -> dict:
         """Return a copy of all {block_id: {...}} final label entries.
 
-        Flattens the nested structure back into a flat dictionary.
+        When a registry is available, keys are **relative** block_ids
+        (matching what BlockRegistry.all_blocks() returns) so the admin
+        panel's consensus table can look them up correctly.  Without a
+        registry the raw ``parent_path/block_name`` keys are returned as a
+        fallback.
         """
         result = {}
         labels = self._data.get("labels", {})
-        for parent_path, blocks in labels.items():
-            for block_name, data in blocks.items():
-                # Reconstruct block_id from parent_path and block_name
-                if parent_path:
-                    block_id = f"{parent_path}/{block_name}"
-                else:
-                    block_id = block_name
-                result[block_id] = data
+        if self._registry:
+            # Build (abs_parent, block_name) → relative_block_id lookup once.
+            block_lookup = {}
+            for block in self._registry.all_blocks():
+                abs_parent = self._registry.get_absolute_parent_path(block.block_id)
+                bname = (
+                    block.block_id.split("/")[-1]
+                    if "/" in block.block_id
+                    else block.block_id
+                )
+                block_lookup[(abs_parent, bname)] = block.block_id
+            for parent_path, blocks in labels.items():
+                for block_name, data in blocks.items():
+                    rel_id = block_lookup.get((parent_path, block_name))
+                    if rel_id is not None:
+                        result[rel_id] = data
+        else:
+            for parent_path, blocks in labels.items():
+                for block_name, data in blocks.items():
+                    block_id = (
+                        f"{parent_path}/{block_name}" if parent_path else block_name
+                    )
+                    result[block_id] = data
         return result

@@ -49,7 +49,9 @@ def export_csv(
             fl_entry = final_labels.get(row["block_id"], {})
             csv_row: dict = {
                 "block_id": row["block_id"],
-                "consensus_label": row["consensus"] if row["consensus"] is not None else "",
+                "consensus_label": (
+                    row["consensus"] if row["consensus"] is not None else ""
+                ),
                 "final_label": fl_entry.get("final_label", ""),
                 "has_disagreement": row["disagreement"],
                 "exported_at": exported_at,
