@@ -386,4 +386,5 @@ class MainWindow(QMainWindow):
         """Push current block index and total to the overlay."""
         block_index = self._block_list.current_block_index()
         total = self._registry.block_count()
-        self._viewer_panel.update_overlay_progress(block_index, total)
+        # Show as "Block 0/19" (0-indexed, matching block_0000 filenames).
+        self._viewer_panel.update_overlay_progress(block_index, max(0, total - 1))

@@ -207,9 +207,9 @@ class BlockListPanel(QWidget):
         self._move_selection(direction=-1)
 
     def current_block_index(self) -> int:
-        """Return the 1-based index of the selected block, or 0 if none."""
+        """Return the 0-based index of the selected block, or 0 if none."""
         row = self._list.currentRow()
-        return row + 1 if row >= 0 else 0
+        return row if row >= 0 else 0
 
     def refresh_block_status(self, block_id: str) -> None:
         """Re-colour a single block after annotation."""
