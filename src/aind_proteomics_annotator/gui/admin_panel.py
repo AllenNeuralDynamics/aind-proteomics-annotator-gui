@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
                             QHeaderView, QLabel, QPushButton, QSpinBox,
@@ -35,7 +35,15 @@ class AdminPanel(QWidget):
     Admins can:
     - Override the final label for any block.
     - Export the full annotation table as a CSV dataset.
+
+    Signals
+    -------
+    block_selected : str
+        Emitted with the block_id when the admin clicks a row,
+        so the main window can load that block in the viewer.
     """
+
+    block_selected = Signal(str)
 
     def __init__(self, config, registry, session, parent=None) -> None:
         super().__init__(parent)
@@ -241,6 +249,7 @@ class AdminPanel(QWidget):
         if block_id_item:
             self._selected_block_id = block_id_item.text()
             self._selected_block_display.setText(f"Block: {self._selected_block_id}")
+            self.block_selected.emit(self._selected_block_id)
 
     def _set_final_label(self) -> None:
         if self._selected_block_id is None:
