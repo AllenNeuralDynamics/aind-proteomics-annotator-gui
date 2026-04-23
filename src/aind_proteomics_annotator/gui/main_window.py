@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
                 registry=self._registry,
                 session=self._session,
             )
+            self._admin_panel.block_selected.connect(self._on_admin_block_selected)
 
         # Wrap in a resizable dialog the first time or if it was closed.
         if not hasattr(self, "_admin_dialog") or not self._admin_dialog.isVisible():
@@ -306,6 +307,24 @@ class MainWindow(QMainWindow):
         self._admin_dialog.show()
         self._admin_dialog.raise_()
         self._admin_dialog.activateWindow()
+
+    def _on_admin_block_selected(self, block_id: str) -> None:
+        """Load *block_id* in the viewer when the admin clicks a table row."""
+        block_info = self._registry.get_block(block_id)
+        if block_info is None:
+            return
+        # Highlight the block in the left panel (fires block_selected → load_block
+        # via the normal signal, so we only need to select it in the list).
+        for i in range(self._block_list._list.count()):
+            item = self._block_list._list.item(i)
+            if item and item.data(Qt.UserRole) == block_id:
+                self._block_list._list.setCurrentRow(i)
+                break
+        else:
+            # Block not in list (different dataset) — load directly.
+            self._viewer_panel.load_block(block_info)
+            self._bottom.set_current_block(block_id)
+            self._update_overlay_progress()
 
     def _get_all_datasets(self) -> list:
         """Discover all blocks/ directories under the data root and return
@@ -386,4 +405,5 @@ class MainWindow(QMainWindow):
         """Push current block index and total to the overlay."""
         block_index = self._block_list.current_block_index()
         total = self._registry.block_count()
-        self._viewer_panel.update_overlay_progress(block_index, total)
+        # Show as "Block 0/19" (0-indexed, matching block_0000 filenames).
+        self._viewer_panel.update_overlay_progress(block_index, max(0, total - 1))

@@ -174,16 +174,19 @@ class ChannelControlWidget(QGroupBox):
     # ------------------------------------------------------------------
 
     def update_data_range(self, data_min: float, data_max: float) -> None:
-        """Set slider bounds and reset selection to the full data range."""
+        """Set slider value to the data range; bounds are always fixed at 0–65535.
+
+        Keeping the bounds fixed ensures the user can always type any 16-bit
+        value and that the value-box width never changes between blocks.
+        """
         if self._range_slider is None:
             return
-        self._range_slider.setRange(data_min, data_max)
+        self._range_slider.setRange(0.0, 65535.0)
         self._range_slider.setValue((data_min, data_max))
         layer = self._get_layer()
         if layer is not None:
-            layer.contrast_limits_range = [data_min, data_max]
+            layer.contrast_limits_range = [0.0, 65535.0]
             layer.contrast_limits = [data_min, data_max]
-        # Re-apply spinbox styles — superqt resets them when range/value changes.
         QTimer.singleShot(0, self._style_range_spinboxes)
 
     def set_initial_color_hint(self, color_hex: str) -> None:
@@ -216,40 +219,20 @@ class ChannelControlWidget(QGroupBox):
         range_min: float | None = None,
         range_max: float | None = None,
     ) -> None:
-        """Apply a range to the slider (values clamped to current bounds).
+        """Apply a range to the slider (used when restoring saved prefs).
 
-        Call this *before* connecting signals so that restoring saved prefs
-        does not trigger spurious saves.
+        Bounds are always expanded to at least 0–65535 so that prefs saved
+        before the fixed-bounds policy never shrink below the full 16-bit range.
         """
         if self._range_slider is None:
             return
-        cur_min = self._range_slider.minimum()
-        cur_max = self._range_slider.maximum()
-        if range_min is not None or range_max is not None:
-            new_min = cur_min if range_min is None else range_min
-            new_max = cur_max if range_max is None else range_max
-            if lo < new_min:
-                new_min = lo
-            if hi > new_max:
-                new_max = hi
-            self._range_slider.setRange(new_min, new_max)
-            layer = self._get_layer()
-            if layer is not None:
-                layer.contrast_limits_range = [new_min, new_max]
-        elif range_min is None and range_max is None:
-            new_min = lo
-            new_max = hi
-            self._range_slider.setRange(new_min, new_max)
-            layer = self._get_layer()
-            if layer is not None:
-                layer.contrast_limits_range = [new_min, new_max]
-        elif lo < cur_min or hi > cur_max:
-            new_min = min(lo, cur_min)
-            new_max = max(hi, cur_max)
-            self._range_slider.setRange(new_min, new_max)
-            layer = self._get_layer()
-            if layer is not None:
-                layer.contrast_limits_range = [new_min, new_max]
+        # Enforce a minimum range of 0–65535; expand beyond if saved prefs require it.
+        new_min = min(range_min if range_min is not None else 0.0, 0.0, lo)
+        new_max = max(range_max if range_max is not None else 65535.0, 65535.0, hi)
+        self._range_slider.setRange(new_min, new_max)
+        layer = self._get_layer()
+        if layer is not None:
+            layer.contrast_limits_range = [new_min, new_max]
         self._range_slider.setValue((lo, hi))
         layer = self._get_layer()
         if layer is not None:
@@ -370,7 +353,11 @@ class ChannelControlWidget(QGroupBox):
         self.lut_changed.emit(self._channel_name, color_hex)
 
     def _auto_range(self) -> None:
-        """Set range to the 1st–99.9th percentile of the current layer data."""
+        """Set handles to the 1st–99.9th percentile; never changes slider bounds.
+
+        Bounds are always 0–65535 so the user can still type any 16-bit value
+        after clicking Auto, and the value-box width stays constant.
+        """
         layer = self._get_layer()
         if layer is None:
             return
@@ -382,16 +369,13 @@ class ChannelControlWidget(QGroupBox):
         if hi <= lo:
             hi = lo + 1.0
         if self._range_slider is not None:
-            cur_min = self._range_slider.minimum()
-            cur_max = self._range_slider.maximum()
-            if lo < cur_min or hi > cur_max:
-                new_min = min(lo, cur_min)
-                new_max = max(hi, cur_max)
-                self._range_slider.setRange(new_min, new_max)
-                layer = self._get_layer()
-                if layer is not None:
-                    layer.contrast_limits_range = [new_min, new_max]
             self._range_slider.setValue((lo, hi))
+        layer = self._get_layer()
+        if layer is not None:
+            try:
+                layer.contrast_limits = [lo, hi]
+            except Exception:
+                pass
 
     def _on_range_changed(self, values) -> None:
         lo, hi = float(values[0]), float(values[1])

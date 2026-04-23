@@ -177,6 +177,12 @@ class ViewerPanel(QWidget):
     def load_block(self, block_info: BlockInfo) -> None:
         """Start async loading of *block_info*. Updates current block id."""
         self._current_block_id = block_info.block_id
+        # Suspend autoplay during loading so the timer doesn't call
+        # dims.set_current_step() against an incomplete layer (which causes
+        # a visible freeze on short/edge blocks until the load completes).
+        self._autoplay_suspended = self._autoplay_timer.isActive()
+        if self._autoplay_suspended:
+            self._autoplay_timer.stop()
         self.loading_started.emit()
 
         worker = load_block_worker(
@@ -247,10 +253,14 @@ class ViewerPanel(QWidget):
         block_id, arrays = result
         self._display_block(block_id, arrays)
         self.loading_finished.emit()
+        if getattr(self, "_autoplay_suspended", False):
+            self._autoplay_timer.start()
+            self._autoplay_suspended = False
 
     def _on_load_error(self, exc: Exception) -> None:
         print(f"[ViewerPanel] Error loading block: {exc}")
         self.loading_finished.emit()
+        self._autoplay_suspended = False
 
     def _display_block(self, block_id: str, arrays: list) -> None:
         """Replace napari layers with the loaded channel arrays."""
