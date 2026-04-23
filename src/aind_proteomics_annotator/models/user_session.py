@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aind_proteomics_annotator.models.annotation_store import (
-    AnnotationStore,
-    FinalLabelStore,
-)
+from aind_proteomics_annotator.models.annotation_store import (AnnotationStore,
+                                                               FinalLabelStore)
 from aind_proteomics_annotator.utils.atomic_io import read_json
 
 if TYPE_CHECKING:

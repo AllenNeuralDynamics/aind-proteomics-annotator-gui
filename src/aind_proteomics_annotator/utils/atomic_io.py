@@ -80,6 +80,4 @@ def read_json(filepath: Path) -> Optional[Any]:
             if attempt < 2:
                 time.sleep(0.05 * (attempt + 1))
 
-    raise RuntimeError(
-        f"Failed to read {filepath} after 3 attempts"
-    ) from last_exc
+    raise RuntimeError(f"Failed to read {filepath} after 3 attempts") from last_exc

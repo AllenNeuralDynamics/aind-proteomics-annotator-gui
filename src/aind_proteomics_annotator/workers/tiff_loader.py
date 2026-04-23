@@ -63,7 +63,9 @@ def _load_channel(path: Path) -> np.ndarray:
 
 
 @thread_worker
-def load_block_worker(tiff_paths: list, block_id: str, cache: Optional[BlockCache] = None):
+def load_block_worker(
+    tiff_paths: list, block_id: str, cache: Optional[BlockCache] = None
+):
     """Background worker that loads all channels for a block.
 
     Parameters

@@ -23,23 +23,14 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
-from qtpy.QtCore import QTimer, Qt, Signal
-from qtpy.QtWidgets import (
-    QCheckBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QPushButton,
+                            QVBoxLayout, QWidget)
 
 from aind_proteomics_annotator.gui.overlay_widget import OverlayWidget
 from aind_proteomics_annotator.models.block_registry import BlockInfo
 from aind_proteomics_annotator.workers.tiff_loader import (
-    BlockCache,
-    load_block_worker,
-    preload_block_worker,
-)
+    BlockCache, load_block_worker, preload_block_worker)
 
 # Default colormaps applied to channels 0, 1, 2, 3, …
 _DEFAULT_COLORMAPS = ["gray", "green", "magenta", "cyan", "red", "yellow", "blue"]
@@ -159,7 +150,6 @@ class ViewerPanel(QWidget):
         self._view3d_cb.setToolTip("Render in 3D")
         ctrl_layout.addWidget(self._view3d_cb)
 
-
         ctrl_layout.addStretch()
         layout.addWidget(controls_bar)
 
@@ -187,6 +177,12 @@ class ViewerPanel(QWidget):
     def load_block(self, block_info: BlockInfo) -> None:
         """Start async loading of *block_info*. Updates current block id."""
         self._current_block_id = block_info.block_id
+        # Suspend autoplay during loading so the timer doesn't call
+        # dims.set_current_step() against an incomplete layer (which causes
+        # a visible freeze on short/edge blocks until the load completes).
+        self._autoplay_suspended = self._autoplay_timer.isActive()
+        if self._autoplay_suspended:
+            self._autoplay_timer.stop()
         self.loading_started.emit()
 
         worker = load_block_worker(
@@ -206,12 +202,10 @@ class ViewerPanel(QWidget):
             else:
                 self._overlay.set_label(label, label_name)
 
-    def update_overlay_progress(
-        self, block_index: int, total: int, unannotated: int
-    ) -> None:
+    def update_overlay_progress(self, block_index: int, total: int) -> None:
         """Update the progress line in the overlay."""
         if self._overlay:
-            self._overlay.set_progress(block_index, total, unannotated)
+            self._overlay.set_progress(block_index, total)
 
     def show_admin_info(
         self,
@@ -259,10 +253,14 @@ class ViewerPanel(QWidget):
         block_id, arrays = result
         self._display_block(block_id, arrays)
         self.loading_finished.emit()
+        if getattr(self, "_autoplay_suspended", False):
+            self._autoplay_timer.start()
+            self._autoplay_suspended = False
 
     def _on_load_error(self, exc: Exception) -> None:
         print(f"[ViewerPanel] Error loading block: {exc}")
         self.loading_finished.emit()
+        self._autoplay_suspended = False
 
     def _display_block(self, block_id: str, arrays: list) -> None:
         """Replace napari layers with the loaded channel arrays."""
@@ -344,9 +342,7 @@ class ViewerPanel(QWidget):
             return
 
         worker = preload_block_worker(neighbors, self._block_cache)
-        worker.errored.connect(
-            lambda exc: print(f"[Preload] Error: {exc}")
-        )
+        worker.errored.connect(lambda exc: print(f"[Preload] Error: {exc}"))
         worker.start()
         self._preload_worker = worker
 
@@ -428,12 +424,16 @@ class ViewerPanel(QWidget):
                         f"expected shape (N, 3), got {points.shape}"
                     )
                     continue
-                self._focus_points[str(folder.resolve())] = points.astype(float, copy=False)
+                self._focus_points[str(folder.resolve())] = points.astype(
+                    float, copy=False
+                )
                 any_loaded = True
             except Exception as exc:
                 print(f"[ViewerPanel] Could not load {npy_path}: {exc}")
 
-        self._set_focus_toggle_enabled(any_loaded, "" if any_loaded else "local_points.npy not found")
+        self._set_focus_toggle_enabled(
+            any_loaded, "" if any_loaded else "local_points.npy not found"
+        )
 
     def _set_focus_toggle_enabled(self, enabled: bool, reason: str) -> None:
         if not hasattr(self, "_focus_cb"):
@@ -444,39 +444,54 @@ class ViewerPanel(QWidget):
         else:
             self._focus_cb.setToolTip("Show the target point for this block")
 
+    def _remove_all_focus_layers(self) -> None:
+        """Remove every layer whose name starts with 'Focus' from the viewer."""
+        if self._viewer is None:
+            return
+        stale = [l for l in list(self._viewer.layers) if l.name.startswith("Focus")]
+        for layer in stale:
+            try:
+                self._viewer.layers.remove(layer)
+            except Exception:
+                pass
+        self._focus_layer = None
+
     def _update_focus_point_layer(self, block_id: str) -> None:
+        # Always clear every stale focus layer first to prevent duplicates.
+        self._remove_all_focus_layers()
+
         if self._viewer is None or self._registry is None:
-            self._focus_layer = None
             return
         if not self._focus_points:
-            self._focus_layer = None
             return
 
         block = self._registry.get_block(block_id)
         if block is None:
-            self._focus_layer = None
             return
 
         # Find local_points.npy for this block's parent folder
         parent_key = str(block.path.parent.resolve())
         points_array = self._focus_points.get(parent_key)
         if points_array is None:
-            self._focus_layer = None
             return
 
         # Find the block's index within its parent folder (sorted order)
         sibling_blocks = sorted(
-            [b for b in self._registry.all_blocks() if b.path.parent.resolve() == block.path.parent.resolve()],
+            [
+                b
+                for b in self._registry.all_blocks()
+                if b.path.parent.resolve() == block.path.parent.resolve()
+            ],
             key=lambda b: b.block_id,
         )
         try:
-            idx = next(i for i, b in enumerate(sibling_blocks) if b.block_id == block_id)
+            idx = next(
+                i for i, b in enumerate(sibling_blocks) if b.block_id == block_id
+            )
         except StopIteration:
-            self._focus_layer = None
             return
 
         if idx >= len(points_array):
-            self._focus_layer = None
             return
 
         point = points_array[idx]

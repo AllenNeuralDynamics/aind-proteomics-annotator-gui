@@ -4,10 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from aind_proteomics_annotator.models.annotation_store import (
-    AnnotationStore,
-    FinalLabelStore,
-)
+from aind_proteomics_annotator.models.annotation_store import (AnnotationStore,
+                                                               FinalLabelStore)
 
 
 class TestAnnotationStore:
