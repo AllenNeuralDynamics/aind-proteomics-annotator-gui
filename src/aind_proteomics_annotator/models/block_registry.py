@@ -5,8 +5,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# Matches block_0001, block_0042, block_9999, etc.
-_BLOCK_PATTERN = re.compile(r"^block_\d{4}$")
+# Matches legacy block_0001 format and UUID format block_<uuid>.
+_BLOCK_PATTERN = re.compile(
+    r"^block_(?:"
+    r"\d{4}"
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r")$"
+)
 
 
 @dataclass

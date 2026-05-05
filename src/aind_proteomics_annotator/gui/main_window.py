@@ -336,7 +336,12 @@ class MainWindow(QMainWindow):
         """
         import re
 
-        _block_re = re.compile(r"^block_\d{4}$")
+        _block_re = re.compile(
+            r"^block_(?:"
+            r"\d{4}"
+            r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+            r")$"
+        )
         data_root = self._registry.data_root
         scan_root = self._find_scan_root(data_root)
         annotations = self._session.store._data.get("annotations", {})
