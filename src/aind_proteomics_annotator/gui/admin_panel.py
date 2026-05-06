@@ -55,14 +55,16 @@ class _S3SyncWorker(QObject):
             # Write each user's data to cloud dir so refresh_data() can read it.
             cloud_dir = self._config.users_cloud_dir
             cloud_dir.mkdir(parents=True, exist_ok=True)
+            cache_root = Path(self._config.s3_local_cache)
             for username, dataset_map in all_data.items():
-                # Merge all datasets for this user into one file.
+                # Merge all datasets for this user into one annotation file.
+                # Keys must be absolute local paths (same format the annotation
+                # store uses) so refresh_data()'s block_lookup can match them.
                 merged_annotations: dict = {}
                 for dataset_key, data in dataset_map.items():
                     if "annotations" in data and isinstance(data["annotations"], dict):
-                        # data["annotations"] is {block_name: {...}} (flat, no abs_parent)
-                        # Store under a placeholder abs_parent key = dataset_key.
-                        merged_annotations[dataset_key] = data["annotations"]
+                        abs_path = str((cache_root / dataset_key).resolve())
+                        merged_annotations[abs_path] = data["annotations"]
                 user_file = cloud_dir / f"{username}.json"
                 payload = {
                     "username": username,
@@ -244,46 +246,99 @@ class AdminPanel(QWidget):
 
     def refresh_data(self) -> None:
         """Re-read user JSON files from the active source and rebuild the table."""
-        self._dataset_path_label.setText(str(self._registry.data_root.resolve()))
         self._all_user_data = {}
         users_dir = self._users_dir
 
-        if users_dir.exists():
-            block_lookup: dict = {}
-            for block in self._registry.all_blocks():
-                abs_parent = self._registry.get_absolute_parent_path(block.block_id)
-                bname = (
-                    block.block_id.split("/")[-1]
-                    if "/" in block.block_id
-                    else block.block_id
-                )
-                block_lookup[(abs_parent, bname)] = block.block_id
-
-            for f in sorted(users_dir.glob("*.json")):
-                # Skip channel-preference files.
-                if "_display_" in f.stem:
-                    continue
-                data = read_json(f)
-                if not (data and "annotations" in data):
-                    continue
-                username = data.get("username", f.stem)
-                flat: dict = {}
-                for parent_path, blocks in data["annotations"].items():
-                    if not isinstance(blocks, dict):
-                        continue
-                    for block_name, entry in blocks.items():
-                        rel_id = block_lookup.get((parent_path, block_name))
-                        if rel_id is not None:
-                            flat[rel_id] = entry
-                if flat:
-                    self._all_user_data[username] = flat
+        if self._is_cloud_mode:
+            self._refresh_cloud(users_dir)
+        else:
+            self._refresh_local(users_dir)
 
         self._active_final_store.load()
+        self._populate_table()
+        self._update_stats()
+
+    def _refresh_local(self, users_dir: Path) -> None:
+        """Populate _all_user_data from local annotation files, filtered by the
+        current registry so only blocks in the open dataset are shown."""
+        self._dataset_path_label.setText(str(self._registry.data_root.resolve()))
+        if not users_dir.exists():
+            self._consensus_rows = []
+            return
+
+        block_lookup: dict = {}
+        for block in self._registry.all_blocks():
+            abs_parent = self._registry.get_absolute_parent_path(block.block_id)
+            bname = (
+                block.block_id.split("/")[-1]
+                if "/" in block.block_id
+                else block.block_id
+            )
+            block_lookup[(abs_parent, bname)] = block.block_id
+
+        for f in sorted(users_dir.glob("*.json")):
+            data = read_json(f)
+            if not (data and "annotations" in data):
+                continue
+            username = data.get("username", f.stem)
+            flat: dict = {}
+            for parent_path, blocks in data["annotations"].items():
+                if not isinstance(blocks, dict):
+                    continue
+                for block_name, entry in blocks.items():
+                    rel_id = block_lookup.get((parent_path, block_name))
+                    if rel_id is not None:
+                        flat[rel_id] = entry
+            if flat:
+                self._all_user_data[username] = flat
 
         block_ids = [b.block_id for b in self._registry.all_blocks()]
         self._consensus_rows = build_consensus_table(self._all_user_data, block_ids)
-        self._populate_table()
-        self._update_stats()
+
+    def _refresh_cloud(self, users_dir: Path) -> None:
+        """Populate _all_user_data from synced cloud annotation files.
+
+        Does not filter by the current registry — shows ALL annotations across
+        ALL cloud datasets.  Block IDs are shown as paths relative to the
+        cloud cache root for readability.
+        """
+        bucket = self._config.s3_output_bucket or "—"
+        prefix = self._config.s3_output_prefix or ""
+        self._dataset_path_label.setText(
+            f"S3: {bucket}/{prefix}" if prefix else f"S3: {bucket}"
+        )
+
+        if not users_dir.exists():
+            self._consensus_rows = []
+            return
+
+        cache_root = Path(self._config.s3_local_cache).resolve()
+
+        for f in sorted(users_dir.glob("*.json")):
+            data = read_json(f)
+            if not (data and "annotations" in data):
+                continue
+            username = data.get("username", f.stem)
+            flat: dict = {}
+            for abs_parent, blocks in data["annotations"].items():
+                if not isinstance(blocks, dict):
+                    continue
+                # Produce a human-readable block ID relative to cloud_datasets/.
+                try:
+                    rel_parent = Path(abs_parent).resolve().relative_to(cache_root)
+                    display_parent = str(rel_parent).replace("\\", "/")
+                except ValueError:
+                    display_parent = Path(abs_parent).name
+                for block_name, entry in blocks.items():
+                    flat[f"{display_parent}/{block_name}"] = entry
+            if flat:
+                self._all_user_data[username] = flat
+
+        # Build block list from the union of all annotated blocks.
+        all_block_ids = sorted(
+            {bid for user in self._all_user_data.values() for bid in user}
+        )
+        self._consensus_rows = build_consensus_table(self._all_user_data, all_block_ids)
 
     # ------------------------------------------------------------------
     # S3 sync
@@ -296,8 +351,12 @@ class AdminPanel(QWidget):
         self._sync_status.setText("Syncing from S3…")
 
         worker = _S3SyncWorker(self._s3_client, self._config)
-        thread = QThread(self)
+        thread = QThread()  # no parent — widget destruction won't kill the thread
         worker.moveToThread(thread)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(worker.deleteLater)
         worker.status.connect(self._sync_status.setText)
         worker.finished.connect(self._on_sync_finished)
         worker.error.connect(self._on_sync_error)

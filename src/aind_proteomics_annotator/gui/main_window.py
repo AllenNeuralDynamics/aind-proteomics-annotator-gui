@@ -426,17 +426,32 @@ class MainWindow(QMainWindow):
 
     def _on_admin_block_selected(self, block_id: str) -> None:
         block_info = self._registry.get_block(block_id)
+
+        # Cloud composite key: "dataset/rel/path/blocks/block_name"
+        if block_info is None and "/" in block_id:
+            parts = block_id.rsplit("/", 1)
+            dataset_rel, block_name = parts[0], parts[1]
+            for base in (self._config.s3_local_cache, self._registry.data_root.parent):
+                blocks_abs = Path(base) / dataset_rel
+                if blocks_abs.exists():
+                    self._on_browse_requested(str(blocks_abs))
+                    block_info = self._registry.get_block(block_name)
+                    break
+
         if block_info is None:
             return
+
+        self._viewer_panel.load_block(block_info)
+        self._bottom.set_current_block(block_info.block_id)
+        self._update_overlay_progress()
+
         for i in range(self._block_list._list.count()):
             item = self._block_list._list.item(i)
-            if item and item.data(Qt.UserRole) == block_id:
+            if item and item.data(Qt.UserRole) == block_info.block_id:
+                self._block_list._list.blockSignals(True)
                 self._block_list._list.setCurrentRow(i)
+                self._block_list._list.blockSignals(False)
                 break
-        else:
-            self._viewer_panel.load_block(block_info)
-            self._bottom.set_current_block(block_id)
-            self._update_overlay_progress()
 
     def _get_all_datasets(self) -> list:
         import re
