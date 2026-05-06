@@ -8,10 +8,39 @@ Run with:
 import sys
 
 
+def _init_s3(config):
+    """Silently probe the AWS credential chain and return an S3Client if valid.
+
+    Never prompts the user — credential entry is handled from the main window
+    (via the S3 button in the block list panel).  Returns None when S3 is not
+    configured, boto3 is missing, or no credentials are available.
+    """
+    if not config.s3_enabled:
+        return None
+    try:
+        import boto3
+        from botocore.exceptions import ClientError, NoCredentialsError
+    except ImportError:
+        return None
+
+    from aind_proteomics_annotator.utils.s3_client import S3Client
+
+    try:
+        profile = config.s3_profile or None
+        session = boto3.Session(profile_name=profile)
+        creds = session.get_credentials()
+        if creds is None:
+            return None
+        return S3Client(session)
+    except (NoCredentialsError, ClientError):
+        return None
+    except Exception:
+        return None
+
+
 def main() -> None:
     from qtpy.QtWidgets import QApplication, QMessageBox
 
-    # Must create QApplication before importing any Qt widgets or napari.
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Proteomics Annotator")
     app.setOrganizationName("AIND")
@@ -25,13 +54,16 @@ def main() -> None:
     config = AppConfig.from_environment()
 
     # --- Login ---
-    dialog = LoginDialog()
+    dialog = LoginDialog(config=config)
     if dialog.exec() != LoginDialog.Accepted:
         sys.exit(0)
 
     username = dialog.username()
 
-    # --- Block discovery (must happen before session to resolve absolute paths) ---
+    # --- S3 initialisation (after login so the app window is not yet shown) ---
+    s3_client = _init_s3(config) if config.s3_enabled else None
+
+    # --- Block discovery ---
     registry = BlockRegistry(config.data_root)
     registry.scan()
 
@@ -48,7 +80,9 @@ def main() -> None:
         sys.exit(1)
 
     # --- Main window ---
-    window = MainWindow(session=session, config=config, registry=registry)
+    window = MainWindow(
+        session=session, config=config, registry=registry, s3_client=s3_client
+    )
     window.show()
 
     sys.exit(app.exec())

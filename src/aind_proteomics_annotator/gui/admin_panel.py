@@ -2,54 +2,102 @@
 and annotation statistics.
 
 Only shown when the logged-in user is listed in configs/roles.json.
+
+The panel has a Local / Cloud toggle:
+- **Local**: reads from ``annotations/users/local/`` and writes final labels
+  to ``annotations/admin/local/final_labels.json``.
+- **Cloud**: reads from ``annotations/users/cloud/`` (populated by previous
+  upload sessions) and offers a "Sync from S3" button to refresh.  Writes
+  final labels to ``annotations/admin/cloud/final_labels.json``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QObject, Qt, QThread, Signal
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import (QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
-                            QHeaderView, QLabel, QPushButton, QSpinBox,
-                            QTableWidget, QTableWidgetItem, QVBoxLayout,
-                            QWidget)
+from qtpy.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QGroupBox,
+                            QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                            QSpinBox, QTableWidget, QTableWidgetItem,
+                            QVBoxLayout, QWidget)
 
-from aind_proteomics_annotator.utils.atomic_io import read_json
+from aind_proteomics_annotator.utils.atomic_io import (atomic_write_json,
+                                                       read_json)
 from aind_proteomics_annotator.utils.consensus import build_consensus_table
 from aind_proteomics_annotator.utils.csv_exporter import export_csv
 
-# Table status background colours.
 _COLOR_NOT_ANNOTATED = QColor("#555555")
 _COLOR_AGREE = QColor("#1A6630")
 _COLOR_DISAGREE = QColor("#882200")
 _COLOR_OVERRIDDEN = QColor("#7A5500")
 
 
+class _S3SyncWorker(QObject):
+    """Downloads all latest annotation files from S3 in a background thread."""
+
+    finished = Signal()
+    error = Signal(str)
+    status = Signal(str)
+
+    def __init__(self, s3_client, config) -> None:
+        super().__init__()
+        self._client = s3_client
+        self._config = config
+
+    def run(self) -> None:
+        try:
+            self.status.emit("Fetching annotation list from S3…")
+            all_data = self._client.load_all_latest_annotations(
+                self._config.s3_output_bucket,
+                self._config.s3_output_prefix,
+            )
+            # Write each user's data to cloud dir so refresh_data() can read it.
+            cloud_dir = self._config.users_cloud_dir
+            cloud_dir.mkdir(parents=True, exist_ok=True)
+            for username, dataset_map in all_data.items():
+                # Merge all datasets for this user into one file.
+                merged_annotations: dict = {}
+                for dataset_key, data in dataset_map.items():
+                    if "annotations" in data and isinstance(data["annotations"], dict):
+                        # data["annotations"] is {block_name: {...}} (flat, no abs_parent)
+                        # Store under a placeholder abs_parent key = dataset_key.
+                        merged_annotations[dataset_key] = data["annotations"]
+                user_file = cloud_dir / f"{username}.json"
+                payload = {
+                    "username": username,
+                    "annotations": merged_annotations,
+                }
+                atomic_write_json(user_file, payload)
+                self.status.emit(f"Synced annotations for {username}.")
+            self.finished.emit()
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class AdminPanel(QWidget):
     """Tab panel for admin users.
 
-    Reads all user annotation files on demand (no caching),
-    computes per-block consensus, and displays summary statistics.
-
-    Admins can:
-    - Override the final label for any block.
-    - Export the full annotation table as a CSV dataset.
-
-    Signals
-    -------
-    block_selected : str
-        Emitted with the block_id when the admin clicks a row,
-        so the main window can load that block in the viewer.
+    Parameters
+    ----------
+    config:
+        Application configuration with path helpers.
+    registry:
+        Block registry for the current dataset.
+    session:
+        Active user session (provides final-label stores).
+    s3_client:
+        Optional S3Client; enables the "Sync from S3" button.
     """
 
     block_selected = Signal(str)
 
-    def __init__(self, config, registry, session, parent=None) -> None:
+    def __init__(self, config, registry, session, s3_client=None, parent=None) -> None:
         super().__init__(parent)
         self._config = config
         self._registry = registry
         self._session = session
+        self._s3_client = s3_client
 
         self._all_user_data: dict = {}
         self._consensus_rows: list = []
@@ -66,7 +114,7 @@ class AdminPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
-        # Dataset path label — centered at the top
+        # Dataset path — top center
         self._dataset_path_label = QLabel(str(self._registry.data_root.resolve()))
         self._dataset_path_label.setAlignment(Qt.AlignCenter)
         self._dataset_path_label.setStyleSheet(
@@ -77,9 +125,38 @@ class AdminPanel(QWidget):
 
         # Top control bar
         top_bar = QHBoxLayout()
+
+        # Local / Cloud toggle
+        top_bar.addWidget(QLabel("Source:"))
+        self._source_combo = QComboBox()
+        self._source_combo.addItems(["Local", "Cloud"])
+        self._source_combo.setToolTip(
+            "Local: annotations from the local filesystem.\n"
+            "Cloud: annotations downloaded from S3."
+        )
+        self._source_combo.currentIndexChanged.connect(self._on_source_changed)
+        top_bar.addWidget(self._source_combo)
+
+        top_bar.addSpacing(12)
+
         refresh_btn = QPushButton("Refresh Data")
         refresh_btn.clicked.connect(self.refresh_data)
         top_bar.addWidget(refresh_btn)
+
+        self._sync_btn = QPushButton("Sync from S3")
+        self._sync_btn.setToolTip(
+            "Download the latest annotation files for all users from S3."
+        )
+        self._sync_btn.setStyleSheet("background-color: #2a4a6a; color: #AADDFF;")
+        self._sync_btn.clicked.connect(self._sync_from_s3)
+        self._sync_btn.setVisible(
+            self._s3_client is not None and self._source_combo.currentText() == "Cloud"
+        )
+        top_bar.addWidget(self._sync_btn)
+
+        self._sync_status = QLabel("")
+        self._sync_status.setStyleSheet("font-size: 11px; color: #AAAAAA;")
+        top_bar.addWidget(self._sync_status)
 
         export_btn = QPushButton("Export CSV…")
         export_btn.clicked.connect(self._export_csv)
@@ -133,18 +210,45 @@ class AdminPanel(QWidget):
         layout.addWidget(self._table, stretch=1)
 
     # ------------------------------------------------------------------
+    # Source toggle
+    # ------------------------------------------------------------------
+
+    def _on_source_changed(self, _) -> None:
+        is_cloud = self._source_combo.currentText() == "Cloud"
+        self._sync_btn.setVisible(self._s3_client is not None and is_cloud)
+        self.refresh_data()
+
+    @property
+    def _is_cloud_mode(self) -> bool:
+        return self._source_combo.currentText() == "Cloud"
+
+    @property
+    def _users_dir(self) -> Path:
+        return (
+            self._config.users_cloud_dir
+            if self._is_cloud_mode
+            else self._config.users_local_dir
+        )
+
+    @property
+    def _active_final_store(self):
+        return (
+            self._session._store_final_cloud
+            if self._is_cloud_mode
+            else self._session._store_final_local
+        )
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def refresh_data(self) -> None:
-        """Re-read all user JSON files from disk and rebuild the table."""
+        """Re-read user JSON files from the active source and rebuild the table."""
         self._dataset_path_label.setText(str(self._registry.data_root.resolve()))
         self._all_user_data = {}
-        users_dir = self._config.users_dir
+        users_dir = self._users_dir
+
         if users_dir.exists():
-            # Build (abs_parent_path, block_name) → relative_block_id lookup
-            # so we can flatten the nested annotation JSON into the flat format
-            # that build_consensus_table expects.
             block_lookup: dict = {}
             for block in self._registry.all_blocks():
                 abs_parent = self._registry.get_absolute_parent_path(block.block_id)
@@ -156,24 +260,60 @@ class AdminPanel(QWidget):
                 block_lookup[(abs_parent, bname)] = block.block_id
 
             for f in sorted(users_dir.glob("*.json")):
+                # Skip channel-preference files.
+                if "_display_" in f.stem:
+                    continue
                 data = read_json(f)
                 if not (data and "annotations" in data):
                     continue
+                username = data.get("username", f.stem)
                 flat: dict = {}
                 for parent_path, blocks in data["annotations"].items():
+                    if not isinstance(blocks, dict):
+                        continue
                     for block_name, entry in blocks.items():
                         rel_id = block_lookup.get((parent_path, block_name))
                         if rel_id is not None:
                             flat[rel_id] = entry
                 if flat:
-                    self._all_user_data[data["username"]] = flat
+                    self._all_user_data[username] = flat
 
-        self._session.final_label_store.load()
+        self._active_final_store.load()
 
         block_ids = [b.block_id for b in self._registry.all_blocks()]
         self._consensus_rows = build_consensus_table(self._all_user_data, block_ids)
         self._populate_table()
         self._update_stats()
+
+    # ------------------------------------------------------------------
+    # S3 sync
+    # ------------------------------------------------------------------
+
+    def _sync_from_s3(self) -> None:
+        if self._s3_client is None:
+            return
+        self._sync_btn.setEnabled(False)
+        self._sync_status.setText("Syncing from S3…")
+
+        worker = _S3SyncWorker(self._s3_client, self._config)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        worker.status.connect(self._sync_status.setText)
+        worker.finished.connect(self._on_sync_finished)
+        worker.error.connect(self._on_sync_error)
+        thread.started.connect(worker.run)
+        thread.start()
+        self._sync_thread = thread
+        self._sync_worker = worker
+
+    def _on_sync_finished(self) -> None:
+        self._sync_status.setText("Sync complete.")
+        self._sync_btn.setEnabled(True)
+        self.refresh_data()
+
+    def _on_sync_error(self, msg: str) -> None:
+        self._sync_status.setText(f"Sync failed: {msg}")
+        self._sync_btn.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -189,19 +329,16 @@ class AdminPanel(QWidget):
         self._table.setHorizontalHeaderLabels(columns)
         self._table.setRowCount(len(self._consensus_rows))
 
-        final_labels_map = self._session.final_label_store.all_labels()
+        final_labels_map = self._active_final_store.all_labels()
 
         for row_idx, row in enumerate(self._consensus_rows):
-            # Block ID
             self._table.setItem(row_idx, 0, _make_item(row["block_id"]))
 
-            # Consensus
             consensus_text = (
                 str(row["consensus"]) if row["consensus"] is not None else "—"
             )
             self._table.setItem(row_idx, 1, _make_item(consensus_text))
 
-            # Final Label
             fl_entry = final_labels_map.get(row["block_id"], {})
             fl_val = fl_entry.get("final_label")
             fl_text = str(fl_val) if fl_val is not None else "—"
@@ -210,7 +347,6 @@ class AdminPanel(QWidget):
                 fl_item.setBackground(_COLOR_OVERRIDDEN)
             self._table.setItem(row_idx, 2, fl_item)
 
-            # Status (colour-coded)
             if not row["user_labels"]:
                 status_text, bg = "Not annotated", _COLOR_NOT_ANNOTATED
             elif row["disagreement"]:
@@ -221,7 +357,6 @@ class AdminPanel(QWidget):
             status_item.setBackground(bg)
             self._table.setItem(row_idx, 3, status_item)
 
-            # Per-user columns
             for col_offset, username in enumerate(usernames):
                 lbl = row["user_labels"].get(username)
                 text = str(lbl) if lbl is not None else "—"
@@ -255,7 +390,7 @@ class AdminPanel(QWidget):
         if self._selected_block_id is None:
             return
         label = self._override_spin.value()
-        self._session.final_label_store.set_final_label(
+        self._active_final_store.set_final_label(
             self._selected_block_id,
             label,
             self._session.username,
@@ -273,7 +408,7 @@ class AdminPanel(QWidget):
             return
         export_csv(
             consensus_rows=self._consensus_rows,
-            final_labels=self._session.final_label_store.all_labels(),
+            final_labels=self._active_final_store.all_labels(),
             output_path=Path(path),
             usernames=list(self._all_user_data.keys()),
         )
