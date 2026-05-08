@@ -31,7 +31,7 @@ def _init_s3(config):
         creds = session.get_credentials()
         if creds is None:
             return None
-        return S3Client(session)
+        return S3Client(session, profile_name=config.s3_profile or "")
     except (NoCredentialsError, ClientError):
         return None
     except Exception:
@@ -68,7 +68,7 @@ def main() -> None:
     registry.scan()
 
     # --- Session ---
-    session = UserSession(username=username, config=config, registry=registry)
+    session = UserSession(username=username, config=config)
     try:
         session.load_or_create()
     except Exception as exc:

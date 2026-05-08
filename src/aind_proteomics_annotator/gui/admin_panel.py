@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QGroupBox,
                             QSpinBox, QTableWidget, QTableWidgetItem,
                             QVBoxLayout, QWidget)
 
+from aind_proteomics_annotator.models.annotation_store import FinalLabelStore
 from aind_proteomics_annotator.utils.atomic_io import (atomic_write_json,
                                                        read_json)
 from aind_proteomics_annotator.utils.consensus import build_consensus_table
@@ -52,25 +53,28 @@ class _S3SyncWorker(QObject):
                 self._config.s3_output_bucket,
                 self._config.s3_output_prefix,
             )
-            # Write each user's data to cloud dir so refresh_data() can read it.
-            cloud_dir = self._config.users_cloud_dir
-            cloud_dir.mkdir(parents=True, exist_ok=True)
-            cache_root = Path(self._config.s3_local_cache)
+            # Write one file per user per dataset under users/cloud/.
             for username, dataset_map in all_data.items():
-                # Merge all datasets for this user into one annotation file.
-                # Keys must be absolute local paths (same format the annotation
-                # store uses) so refresh_data()'s block_lookup can match them.
-                merged_annotations: dict = {}
-                for dataset_key, data in dataset_map.items():
-                    if "annotations" in data and isinstance(data["annotations"], dict):
-                        abs_path = str((cache_root / dataset_key).resolve())
-                        merged_annotations[abs_path] = data["annotations"]
-                user_file = cloud_dir / f"{username}.json"
-                payload = {
-                    "username": username,
-                    "annotations": merged_annotations,
-                }
-                atomic_write_json(user_file, payload)
+                for dataset_slug, data in dataset_map.items():
+                    if not (
+                        data
+                        and "annotations" in data
+                        and isinstance(data["annotations"], dict)
+                    ):
+                        continue
+                    dataset_key = data.get("dataset_key") or dataset_slug
+                    dest = self._config.user_dataset_file(
+                        username, dataset_key, cloud=True
+                    )
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    payload = {
+                        "username": username,
+                        "dataset_key": data.get("dataset_key", ""),
+                        "dataset_slug": dataset_slug,
+                        "s3_source_key": data.get("_s3_source_key", ""),
+                        "annotations": data["annotations"],
+                    }
+                    atomic_write_json(dest, payload)
                 self.status.emit(f"Synced annotations for {username}.")
             self.finished.emit()
         except Exception as exc:
@@ -104,6 +108,9 @@ class AdminPanel(QWidget):
         self._all_user_data: dict = {}
         self._consensus_rows: list = []
         self._selected_block_id: str | None = None
+        self._final_label_stores: dict[str, FinalLabelStore] = {}
+        # {username: {dataset_key: "s3://bucket/full/key.json"}} populated in cloud mode
+        self._user_s3_annotation_keys: dict[str, dict[str, str]] = {}
 
         self._build_ui()
         self.refresh_data()
@@ -232,21 +239,47 @@ class AdminPanel(QWidget):
             else self._config.users_local_dir
         )
 
-    @property
-    def _active_final_store(self):
-        return (
-            self._session._store_final_cloud
-            if self._is_cloud_mode
-            else self._session._store_final_local
-        )
+    def _slug_for_block_id(self, block_id: str) -> str:
+        """Return the dataset slug for a block ID (bare or composite)."""
+        if "/" in block_id:
+            dataset_key = block_id.rsplit("/", 1)[0]
+            return self._config.dataset_slug(dataset_key)
+        return self._session._current_dataset_slug
+
+    def _store_for_slug(self, slug: str) -> FinalLabelStore:
+        """Return a loaded FinalLabelStore for *slug*, cached until next refresh."""
+        if slug not in self._final_label_stores:
+            fp = self._config.final_labels_file(slug, cloud=self._is_cloud_mode)
+            store = FinalLabelStore(fp)
+            store.load()
+            self._final_label_stores[slug] = store
+        return self._final_label_stores[slug]
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def select_block_row(self, block_id: str) -> None:
+        """Select the table row whose Block-ID column equals *block_id*.
+
+        Blocks table signals to avoid re-emitting ``block_selected``, then
+        restores keyboard focus to the table so the selection stays visually
+        active (highlighted in blue rather than gray).
+        """
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item and item.text() == block_id:
+                self._table.blockSignals(True)
+                self._table.selectRow(row)
+                self._table.blockSignals(False)
+                self._table.scrollToItem(item)
+                break
+        self._table.setFocus()
+
     def refresh_data(self) -> None:
         """Re-read user JSON files from the active source and rebuild the table."""
         self._all_user_data = {}
+        self._user_s3_annotation_keys = {}
         users_dir = self._users_dir
 
         if self._is_cloud_mode:
@@ -254,41 +287,39 @@ class AdminPanel(QWidget):
         else:
             self._refresh_local(users_dir)
 
-        self._active_final_store.load()
+        self._final_label_stores = {}
         self._populate_table()
         self._update_stats()
 
     def _refresh_local(self, users_dir: Path) -> None:
-        """Populate _all_user_data from local annotation files, filtered by the
-        current registry so only blocks in the open dataset are shown."""
+        """Populate _all_user_data from local per-dataset annotation files.
+
+        Reads ``users/local/{username}/{dataset_slug}.json`` for the current
+        dataset slug and filters to blocks in the open registry.
+        """
         self._dataset_path_label.setText(str(self._registry.data_root.resolve()))
         if not users_dir.exists():
             self._consensus_rows = []
             return
 
-        block_lookup: dict = {}
-        for block in self._registry.all_blocks():
-            abs_parent = self._registry.get_absolute_parent_path(block.block_id)
-            bname = (
-                block.block_id.split("/")[-1]
-                if "/" in block.block_id
-                else block.block_id
-            )
-            block_lookup[(abs_parent, bname)] = block.block_id
+        dataset_key = self._session._current_dataset_key
+        block_ids_set = {b.block_id for b in self._registry.all_blocks()}
 
-        for f in sorted(users_dir.glob("*.json")):
+        for user_dir in sorted(users_dir.iterdir()):
+            if not user_dir.is_dir():
+                continue
+            username = user_dir.name
+            f = self._config.user_dataset_file(username, dataset_key, cloud=False)
+            if not f.exists():
+                continue
             data = read_json(f)
             if not (data and "annotations" in data):
                 continue
-            username = data.get("username", f.stem)
-            flat: dict = {}
-            for parent_path, blocks in data["annotations"].items():
-                if not isinstance(blocks, dict):
-                    continue
-                for block_name, entry in blocks.items():
-                    rel_id = block_lookup.get((parent_path, block_name))
-                    if rel_id is not None:
-                        flat[rel_id] = entry
+            flat = {
+                bname: entry
+                for bname, entry in data["annotations"].items()
+                if bname in block_ids_set
+            }
             if flat:
                 self._all_user_data[username] = flat
 
@@ -296,11 +327,11 @@ class AdminPanel(QWidget):
         self._consensus_rows = build_consensus_table(self._all_user_data, block_ids)
 
     def _refresh_cloud(self, users_dir: Path) -> None:
-        """Populate _all_user_data from synced cloud annotation files.
+        """Populate _all_user_data from synced cloud per-dataset annotation files.
 
-        Does not filter by the current registry — shows ALL annotations across
-        ALL cloud datasets.  Block IDs are shown as paths relative to the
-        cloud cache root for readability.
+        Reads ALL ``users/cloud/{username}/{dataset_slug}.json`` files — one
+        entry per dataset per user — and presents block IDs as
+        ``{dataset_slug}/{block_name}`` so they are globally unique in the table.
         """
         bucket = self._config.s3_output_bucket or "—"
         prefix = self._config.s3_output_prefix or ""
@@ -312,29 +343,28 @@ class AdminPanel(QWidget):
             self._consensus_rows = []
             return
 
-        cache_root = Path(self._config.s3_local_cache).resolve()
-
-        for f in sorted(users_dir.glob("*.json")):
-            data = read_json(f)
-            if not (data and "annotations" in data):
+        for user_dir in sorted(users_dir.iterdir()):
+            if not user_dir.is_dir():
                 continue
-            username = data.get("username", f.stem)
+            username = user_dir.name
             flat: dict = {}
-            for abs_parent, blocks in data["annotations"].items():
-                if not isinstance(blocks, dict):
+            for f in sorted(user_dir.rglob("*.json")):
+                data = read_json(f)
+                if not (data and "annotations" in data):
                     continue
-                # Produce a human-readable block ID relative to cloud_datasets/.
-                try:
-                    rel_parent = Path(abs_parent).resolve().relative_to(cache_root)
-                    display_parent = str(rel_parent).replace("\\", "/")
-                except ValueError:
-                    display_parent = Path(abs_parent).name
-                for block_name, entry in blocks.items():
-                    flat[f"{display_parent}/{block_name}"] = entry
+                dataset_key = data.get("dataset_key", "") or data.get(
+                    "dataset_slug", f.stem
+                )
+                s3_src = data.get("s3_source_key", "")
+                if s3_src and dataset_key:
+                    self._user_s3_annotation_keys.setdefault(username, {})[
+                        dataset_key
+                    ] = s3_src
+                for block_name, entry in data["annotations"].items():
+                    flat[f"{dataset_key}/{block_name}"] = entry
             if flat:
                 self._all_user_data[username] = flat
 
-        # Build block list from the union of all annotated blocks.
         all_block_ids = sorted(
             {bid for user in self._all_user_data.values() for bid in user}
         )
@@ -388,7 +418,12 @@ class AdminPanel(QWidget):
         self._table.setHorizontalHeaderLabels(columns)
         self._table.setRowCount(len(self._consensus_rows))
 
-        final_labels_map = self._active_final_store.all_labels()
+        # Pre-load final labels for every dataset slug present in the table.
+        slug_labels: dict[str, dict] = {}
+        for row in self._consensus_rows:
+            slug = self._slug_for_block_id(row["block_id"])
+            if slug not in slug_labels:
+                slug_labels[slug] = self._store_for_slug(slug).all_labels()
 
         for row_idx, row in enumerate(self._consensus_rows):
             self._table.setItem(row_idx, 0, _make_item(row["block_id"]))
@@ -398,7 +433,9 @@ class AdminPanel(QWidget):
             )
             self._table.setItem(row_idx, 1, _make_item(consensus_text))
 
-            fl_entry = final_labels_map.get(row["block_id"], {})
+            slug = self._slug_for_block_id(row["block_id"])
+            bare_id = row["block_id"].rsplit("/", 1)[-1]
+            fl_entry = slug_labels.get(slug, {}).get(bare_id, {})
             fl_val = fl_entry.get("final_label")
             fl_text = str(fl_val) if fl_val is not None else "—"
             fl_item = _make_item(fl_text)
@@ -449,12 +486,65 @@ class AdminPanel(QWidget):
         if self._selected_block_id is None:
             return
         label = self._override_spin.value()
-        self._active_final_store.set_final_label(
-            self._selected_block_id,
-            label,
-            self._session.username,
-        )
+        block_id = self._selected_block_id
+        if "/" in block_id:
+            dataset_key = block_id.rsplit("/", 1)[0]
+        else:
+            dataset_key = self._session._current_dataset_key
+        slug = self._config.dataset_slug(dataset_key)
+        store = self._store_for_slug(slug)
+        store.set_final_label(block_id, label, self._session.username)
+        self._update_user_annotation_refs(store, dataset_key)
+        if self._is_cloud_mode and self._s3_client is not None:
+            self._upload_final_labels_to_s3(store, dataset_key)
+        self._final_label_stores.pop(slug, None)
         self.refresh_data()
+
+    def _update_user_annotation_refs(self, store, dataset_key: str) -> None:
+        """Populate user_annotation_refs with the actual S3 annotation file URLs.
+
+        Prefers the key stored in the local cloud file (fast).  Falls back to
+        a live S3 listing when the local file pre-dates the s3_source_key field.
+        """
+        if not self._is_cloud_mode or not self._config.s3_output_bucket:
+            return
+        refs = {}
+        for username in self._all_user_data:
+            s3_key = self._user_s3_annotation_keys.get(username, {}).get(
+                dataset_key, ""
+            )
+            if not s3_key and self._s3_client is not None:
+                # Local file is from before s3_source_key was added — query S3.
+                s3_slug = self._config.dataset_slug(dataset_key)
+                s3_key = self._s3_client.get_latest_annotation_key(
+                    self._config.s3_output_bucket,
+                    self._config.s3_output_prefix,
+                    username,
+                    s3_slug,
+                )
+            if s3_key:
+                refs[username] = s3_key
+        if refs:
+            store.set_user_annotation_refs(refs)
+
+    def _upload_final_labels_to_s3(self, store, dataset_key: str) -> None:
+        """Upload the final-labels file to S3 (best-effort, silent on error)."""
+        import threading
+        from datetime import datetime
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        s3_key = self._config.s3_admin_final_labels_key(dataset_key, date_str)
+        data = store._data.copy()
+
+        def _upload():
+            try:
+                self._s3_client.upload_final_labels(
+                    self._config.s3_output_bucket, s3_key, data
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_upload, daemon=True).start()
 
     def _export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -465,9 +555,16 @@ class AdminPanel(QWidget):
         )
         if not path:
             return
+        all_final: dict = {}
+        for row in self._consensus_rows:
+            slug = self._slug_for_block_id(row["block_id"])
+            bare = row["block_id"].rsplit("/", 1)[-1]
+            entry = self._store_for_slug(slug).all_labels().get(bare)
+            if entry:
+                all_final[bare] = entry
         export_csv(
             consensus_rows=self._consensus_rows,
-            final_labels=self._active_final_store.all_labels(),
+            final_labels=all_final,
             output_path=Path(path),
             usernames=list(self._all_user_data.keys()),
         )

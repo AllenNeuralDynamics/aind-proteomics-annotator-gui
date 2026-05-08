@@ -186,6 +186,54 @@ class AppConfig:
         return f"Channel {index}"
 
     # ------------------------------------------------------------------
+    # Dataset slug helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def dataset_slug(dataset_key: str) -> str:
+        """Convert a slash-separated dataset key to a flat underscore slug.
+
+        Example: ``"Tile_X_0000/ch_561/blocks"`` → ``"Tile_X_0000_ch_561_blocks"``
+        """
+        return dataset_key.strip("/").replace("/", "_")
+
+    def dataset_key_for_path(self, data_root: Path) -> str:
+        """Derive a portable slash-separated dataset key for *data_root*.
+
+        For cloud datasets (path under ``s3_local_cache``), returns the path
+        relative to the cache root.  For local datasets, walks up to find the
+        experiment root (ancestor whose children include a ``Tile_*`` dir) and
+        returns the path relative to that root.  Falls back to the last three
+        path components joined with ``/``.
+        """
+        resolved = Path(data_root).resolve()
+        # Cloud: relative to s3_local_cache
+        try:
+            rel = resolved.relative_to(self.s3_local_cache.resolve())
+            return str(rel).replace("\\", "/")
+        except ValueError:
+            pass
+        # Local: walk up to find experiment root
+        p = resolved
+        for _ in range(6):
+            parent = p.parent
+            if parent == p:
+                break
+            try:
+                siblings = [d.name for d in parent.iterdir() if d.is_dir()]
+                if any(_TILE_RE.search(n) for n in siblings):
+                    try:
+                        return str(resolved.relative_to(parent)).replace("\\", "/")
+                    except ValueError:
+                        break
+            except OSError:
+                break
+            p = parent
+        # Fallback: last three components
+        parts = resolved.parts
+        return "/".join(parts[-3:]) if len(parts) >= 3 else resolved.name
+
+    # ------------------------------------------------------------------
     # Annotation directory structure (local vs cloud)
     # ------------------------------------------------------------------
 
@@ -205,11 +253,62 @@ class AppConfig:
     def admin_cloud_dir(self) -> Path:
         return self.annotations_root / "admin" / "cloud"
 
-    def user_local_file(self, username: str) -> Path:
-        return self.users_local_dir / f"{username}.json"
+    def user_dataset_file(
+        self, username: str, dataset_key: str, cloud: bool = False
+    ) -> Path:
+        """Return the per-dataset annotation file path for *username*.
 
-    def user_cloud_file(self, username: str) -> Path:
-        return self.users_cloud_dir / f"{username}.json"
+        Nests under the first path component of *dataset_key* (experiment dir):
+
+        ``annotations/users/local/{username}/{experiment}/{rest_slug}.json``  (local)
+        ``annotations/users/cloud/{username}/{experiment}/{rest_slug}.json``  (cloud)
+
+        Falls back to a flat ``{slug}.json`` when *dataset_key* has no slash.
+        """
+        base = self.users_cloud_dir if cloud else self.users_local_dir
+        parts = dataset_key.strip("/").split("/", 1)
+        if len(parts) == 2:
+            experiment, rest = parts
+            slug = rest.replace("/", "_")
+            return base / username / experiment / f"{slug}.json"
+        return base / username / f"{dataset_key.replace('/', '_')}.json"
+
+    def final_labels_file(self, dataset_slug: str, cloud: bool = False) -> Path:
+        """Return the admin final-labels file path for *dataset_slug*.
+
+        ``annotations/admin/local/{dataset_slug}_final_labels.json``  (local)
+        ``annotations/admin/cloud/{dataset_slug}_final_labels.json``  (cloud)
+        """
+        base = self.admin_cloud_dir if cloud else self.admin_local_dir
+        return base / f"{dataset_slug}_final_labels.json"
+
+    def s3_user_annotation_key(
+        self, username: str, dataset_slug: str, date_str: str
+    ) -> str:
+        """Build the S3 key for a per-user per-dataset annotation upload.
+
+        Format: ``{output_prefix}/users/{username}/{dataset_slug}/{date_str}.json``
+        """
+        prefix = self.s3_output_prefix.rstrip("/")
+        return f"{prefix}/users/{username}/{dataset_slug}/{date_str}.json"
+
+    def s3_admin_final_labels_key(self, dataset_key: str, date_str: str) -> str:
+        """Build the S3 key for the admin final-labels file of *dataset_key*.
+
+        Format:
+          ``{prefix}/admin/{experiment}/{rest_slug}_{date_str}_final_labels.json``
+
+        where *experiment* is the first path component of *dataset_key* and
+        *rest_slug* is the remaining components joined with ``_``.
+        """
+        prefix = self.s3_output_prefix.rstrip("/")
+        parts = dataset_key.strip("/").split("/", 1)
+        if len(parts) == 2:
+            experiment, rest = parts
+            slug = rest.replace("/", "_")
+            return f"{prefix}/admin/{experiment}/{slug}_{date_str}_final_labels.json"
+        slug = dataset_key.replace("/", "_")
+        return f"{prefix}/admin/{slug}_{date_str}_final_labels.json"
 
     @property
     def display_preferences_dir(self) -> Path:
@@ -221,14 +320,6 @@ class AppConfig:
         Settings apply to all datasets — not scoped to a specific data root.
         """
         return self.display_preferences_dir / f"{username}.json"
-
-    @property
-    def final_labels_local_file(self) -> Path:
-        return self.admin_local_dir / "final_labels.json"
-
-    @property
-    def final_labels_cloud_file(self) -> Path:
-        return self.admin_cloud_dir / "final_labels.json"
 
     # ------------------------------------------------------------------
     # S3 helpers

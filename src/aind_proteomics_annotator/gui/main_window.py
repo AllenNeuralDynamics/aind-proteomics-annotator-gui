@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
             configured=config.s3_enabled,
         )
 
+        # Initialise annotation store for the startup dataset so that
+        # annotations and green-status counting work before the user
+        # explicitly browses to a different dataset.
+        self._session.switch_data_root(self._registry.data_root)
+
         self._block_list.populate(
             self._registry.all_blocks(),
             self._session.store,
@@ -196,7 +201,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        self._upload_annotations_to_s3(self._registry.data_root, wait=True)
+        self._upload_annotations_to_s3(wait=True)
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -272,6 +277,7 @@ class MainWindow(QMainWindow):
             (i for i, d in enumerate(datasets) if d["path"] == current), None
         )
         if current_idx is None:
+            self._block_list.set_recent_datasets(datasets)
             return
 
         n = len(datasets)
@@ -282,16 +288,24 @@ class MainWindow(QMainWindow):
                 self._on_browse_requested(d["path"])
                 return
 
+        # All datasets complete — refresh list so counts/colors update.
+        self._block_list.set_recent_datasets(datasets)
+
     def _on_browse_requested(self, path: str) -> None:
         """Switch to a new data root directory."""
         # Upload annotations for the current dataset before switching.
-        self._upload_annotations_to_s3(self._registry.data_root, wait=True)
+        self._upload_annotations_to_s3(wait=True)
         self._switch_dataset(path)
 
     def _on_s3_browse_requested(self) -> None:
         """Open the S3 dataset browser dialog."""
         from aind_proteomics_annotator.gui.s3_dataset_dialog import \
             S3DatasetDialog
+
+        # Refresh the boto3 session so any newly-written SSO token cache
+        # (after 'aws sso login') is picked up without restarting the app.
+        if self._s3_client is not None:
+            self._s3_client.refresh()
 
         dialog = S3DatasetDialog(
             s3_client=self._s3_client,
@@ -332,7 +346,7 @@ class MainWindow(QMainWindow):
     # S3 upload
     # ------------------------------------------------------------------
 
-    def _upload_annotations_to_s3(self, data_root: Path, wait: bool = False) -> None:
+    def _upload_annotations_to_s3(self, wait: bool = False) -> None:
         """Upload the current dataset's annotations to S3 if in cloud mode.
 
         Only runs when an S3 client is available and the active store is the
@@ -343,31 +357,21 @@ class MainWindow(QMainWindow):
         if not self._config.s3_output_bucket:
             return
 
-        # Extract annotations for the current dataset only.
-        abs_parent = str(Path(data_root).resolve())
-        annotations = self._session._store_cloud._data.get("annotations", {}).get(
-            abs_parent
-        )
+        annotations = self._session.store.all_annotations()
         if not annotations:
             return
 
-        # Build the S3 key.
-        cache_root = Path(self._config.s3_local_cache).resolve()
-        try:
-            rel = Path(data_root).resolve().relative_to(cache_root)
-            dataset_key = str(rel).replace("\\", "/")
-        except ValueError:
-            dataset_key = Path(data_root).name
-
+        dataset_slug = self._session._current_dataset_slug
+        dataset_key = self._session._current_dataset_key
         date_str = datetime.now().strftime("%Y-%m-%d")
-        s3_key = (
-            f"{self._config.s3_output_prefix.rstrip('/')}/"
-            f"{self._session.username}/{dataset_key}/{date_str}.json"
+        s3_key = self._config.s3_user_annotation_key(
+            self._session.username, dataset_slug, date_str
         )
 
         payload = {
             "username": self._session.username,
-            "dataset_s3_key": dataset_key,
+            "dataset_key": dataset_key,
+            "dataset_slug": dataset_slug,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
             "annotations": annotations,
         }
@@ -453,8 +457,16 @@ class MainWindow(QMainWindow):
                 self._block_list._list.blockSignals(False)
                 break
 
+        # Re-select the admin table row and restore focus.  In cloud mode,
+        # _on_browse_requested above may have called refresh_data() which
+        # rebuilds the table and clears the selection.
+        if self._admin_panel is not None:
+            self._admin_panel.select_block_row(block_id)
+
     def _get_all_datasets(self) -> list:
         import re
+
+        from aind_proteomics_annotator.utils.atomic_io import read_json
 
         _block_re = re.compile(
             r"^block_(?:"
@@ -464,7 +476,6 @@ class MainWindow(QMainWindow):
         )
         data_root = self._registry.data_root
         scan_root = self._find_scan_root(data_root)
-        annotations = self._session.store._data.get("annotations", {})
 
         result = []
         try:
@@ -472,12 +483,33 @@ class MainWindow(QMainWindow):
         except OSError:
             blocks_dirs = [data_root] if data_root.is_dir() else []
 
+        try:
+            cloud_cache = self._config.s3_local_cache.resolve()
+        except Exception:
+            cloud_cache = None
+
         for blocks_dir in blocks_dirs[:200]:
-            path_str = str(blocks_dir.resolve())
-            dataset_ann = annotations.get(path_str, {})
-            annotated = sum(
-                1 for v in dataset_ann.values() if v.get("label") is not None
+            dataset_key = self._config.dataset_key_for_path(blocks_dir)
+            is_cloud = False
+            if cloud_cache is not None:
+                try:
+                    blocks_dir.resolve().relative_to(cloud_cache)
+                    is_cloud = True
+                except ValueError:
+                    pass
+            ann_file = self._config.user_dataset_file(
+                self._session.username, dataset_key, cloud=is_cloud
             )
+            annotated = 0
+            if ann_file.exists():
+                data = read_json(ann_file)
+                if data and "annotations" in data:
+                    annotated = sum(
+                        1
+                        for v in data["annotations"].values()
+                        if v.get("label") is not None
+                    )
+            path_str = str(blocks_dir.resolve())
             try:
                 total = sum(
                     1

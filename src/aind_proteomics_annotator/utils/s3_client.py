@@ -14,9 +14,62 @@ from typing import Callable, Optional
 class S3Client:
     """Wraps a boto3 Session with the operations the annotator needs."""
 
-    def __init__(self, session) -> None:
+    def __init__(self, session, profile_name: str = "") -> None:
+        self._profile_name = profile_name
         self._session = session
         self._s3 = session.client("s3")
+
+    # ------------------------------------------------------------------
+    # Auth helpers
+    # ------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        """Re-create the boto3 session and client from scratch.
+
+        Call this after ``aws sso login`` so the next operation picks up the
+        freshly-written SSO token cache without restarting the application.
+        """
+        import boto3
+
+        self._session = boto3.Session(profile_name=self._profile_name or None)
+        self._s3 = self._session.client("s3")
+
+    def _check_auth_error(self, exc: Exception) -> None:
+        """Raise a user-friendly RuntimeError when *exc* is an expired-token error."""
+        try:
+            from botocore import exceptions as be
+
+            sso_types = tuple(
+                t
+                for name in (
+                    "UnauthorizedSSOTokenError",
+                    "SSOTokenLoadError",
+                    "TokenRetrievalError",
+                    "CredentialRetrievalError",
+                    "NoCredentialsError",
+                )
+                if (t := getattr(be, name, None)) is not None
+            )
+            if sso_types and isinstance(exc, sso_types):
+                raise RuntimeError(self._auth_expired_msg()) from exc
+            if isinstance(exc, be.ClientError):
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("ExpiredTokenException", "ExpiredToken"):
+                    raise RuntimeError(self._auth_expired_msg()) from exc
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+
+    def _auth_expired_msg(self) -> str:
+        cmd = "aws sso login"
+        if self._profile_name:
+            cmd += f" --profile {self._profile_name}"
+        return (
+            f"AWS credentials have expired.\n\n"
+            f"Run the following command in your terminal, then click S3 again:\n\n"
+            f"    {cmd}"
+        )
 
     # ------------------------------------------------------------------
     # Connection / credential check
@@ -57,6 +110,7 @@ class S3Client:
                             blocks_prefixes.add(blocks_key)
                             break
         except Exception as exc:
+            self._check_auth_error(exc)
             raise RuntimeError(
                 f"Failed to list datasets from s3://{bucket}/{prefix}: {exc}"
             ) from exc
@@ -100,6 +154,7 @@ class S3Client:
                 for obj in page.get("Contents", []):
                     keys.append(obj["Key"])
         except Exception as exc:
+            self._check_auth_error(exc)
             raise RuntimeError(f"Failed to list objects for download: {exc}") from exc
 
         total = len(keys)
@@ -115,6 +170,7 @@ class S3Client:
             try:
                 self._s3.download_file(bucket, key, str(dest))
             except Exception as exc:
+                self._check_auth_error(exc)
                 raise RuntimeError(f"Failed to download {key}: {exc}") from exc
             if progress_cb:
                 progress_cb(done, total)
@@ -131,6 +187,7 @@ class S3Client:
                 Bucket=bucket, Key=key, Body=body, ContentType="application/json"
             )
         except Exception as exc:
+            self._check_auth_error(exc)
             raise RuntimeError(
                 f"Failed to upload annotations to s3://{bucket}/{key}: {exc}"
             ) from exc
@@ -144,49 +201,86 @@ class S3Client:
     ) -> dict[str, dict]:
         """Download the most-recent annotation file for every user+dataset.
 
-        Scans ``s3://<bucket>/<output_prefix>/<username>/.../<YYYY-MM-DD>.json``
-        and for each ``(username, dataset_path)`` pair selects the
-        lexicographically largest date key (latest day).
+        New S3 key format:
+          ``<prefix>/users/<username>/<dataset_slug>/<YYYY-MM-DD>.json``
+
+        For each ``(username, dataset_slug)`` pair the lexicographically largest
+        date key is selected (latest day).
 
         Returns
         -------
         dict
-            ``{username: {dataset_key: <parsed annotation dict>}}``
+            ``{username: {dataset_slug: <parsed annotation dict>}}``
         """
-        output_prefix = output_prefix.rstrip("/") + "/" if output_prefix else ""
+        prefix = output_prefix.rstrip("/") + "/" if output_prefix else ""
+        users_prefix = f"{prefix}users/"
         paginator = self._s3.get_paginator("list_objects_v2")
-
-        # Collect all annotation keys grouped by (username, dataset_path).
-        # Key format: <prefix>/<username>/<dataset_path...>/<YYYY-MM-DD>.json
         from collections import defaultdict
 
         latest: dict[tuple[str, str], str] = {}
 
         try:
-            for page in paginator.paginate(Bucket=bucket, Prefix=output_prefix):
+            for page in paginator.paginate(Bucket=bucket, Prefix=users_prefix):
                 for obj in page.get("Contents", []):
                     key: str = obj["Key"]
-                    rel = key[len(output_prefix) :]
+                    # rel: {username}/{dataset_slug}/{YYYY-MM-DD}.json
+                    rel = key[len(users_prefix) :]
                     parts = rel.split("/")
-                    if len(parts) < 2 or not parts[-1].endswith(".json"):
+                    if len(parts) != 3 or not parts[-1].endswith(".json"):
                         continue
-                    username = parts[0]
-                    # dataset_path = everything between username and the date file
-                    dataset_path = "/".join(parts[1:-1])
-                    group = (username, dataset_path)
+                    username, dataset_slug = parts[0], parts[1]
+                    group = (username, dataset_slug)
                     if group not in latest or key > latest[group]:
                         latest[group] = key
         except Exception as exc:
+            self._check_auth_error(exc)
             raise RuntimeError(f"Failed to list annotation files: {exc}") from exc
 
-        # Download and parse each latest file.
         result: dict[str, dict] = defaultdict(dict)
-        for (username, dataset_path), key in latest.items():
+        for (username, dataset_slug), key in latest.items():
             data = self.download_json(bucket, key)
             if data:
-                result[username][dataset_path] = data
+                data["_s3_source_key"] = f"s3://{bucket}/{key}"
+                result[username][dataset_slug] = data
 
         return dict(result)
+
+    def upload_final_labels(self, bucket: str, key: str, data: dict) -> None:
+        """Upload admin final-labels JSON to *bucket*/*key*."""
+        body = json.dumps(data, indent=2).encode("utf-8")
+        try:
+            self._s3.put_object(
+                Bucket=bucket, Key=key, Body=body, ContentType="application/json"
+            )
+        except Exception as exc:
+            self._check_auth_error(exc)
+            raise RuntimeError(
+                f"Failed to upload final labels to s3://{bucket}/{key}: {exc}"
+            ) from exc
+
+    def get_latest_annotation_key(
+        self, bucket: str, output_prefix: str, username: str, dataset_slug: str
+    ) -> str:
+        """Return the full ``s3://`` URL of the latest annotation file.
+
+        Scans ``{output_prefix}/users/{username}/{dataset_slug}/`` for
+        ``*.json`` objects and returns the one with the lexicographically
+        largest key (i.e. the most recent date).  Returns ``""`` on any error
+        or when no files are found.
+        """
+        prefix = output_prefix.rstrip("/") + "/"
+        search_prefix = f"{prefix}users/{username}/{dataset_slug}/"
+        paginator = self._s3.get_paginator("list_objects_v2")
+        latest_key = ""
+        try:
+            for page in paginator.paginate(Bucket=bucket, Prefix=search_prefix):
+                for obj in page.get("Contents", []):
+                    key: str = obj["Key"]
+                    if key.endswith(".json") and key > latest_key:
+                        latest_key = key
+        except Exception:
+            return ""
+        return f"s3://{bucket}/{latest_key}" if latest_key else ""
 
     def download_json(self, bucket: str, key: str) -> Optional[dict]:
         """Download and parse a JSON object; return None on any error."""
