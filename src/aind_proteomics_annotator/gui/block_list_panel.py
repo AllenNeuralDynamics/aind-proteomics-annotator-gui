@@ -46,6 +46,7 @@ class BlockListPanel(QWidget):
 
     block_selected = Signal(str)
     browse_requested = Signal(str)
+    s3_browse_requested = Signal()
 
     def __init__(self, session, config, parent=None) -> None:
         super().__init__(parent)
@@ -71,6 +72,14 @@ class BlockListPanel(QWidget):
         self._browse_btn.setToolTip("Change the data root directory")
         self._browse_btn.clicked.connect(self._on_browse_clicked)
         header_row.addWidget(self._browse_btn)
+
+        # S3 button — always shown, state set later via set_s3_available().
+        self._s3_btn = QPushButton("S3…")
+        self._s3_btn.setFixedHeight(22)
+        self._s3_btn.setEnabled(False)
+        self._s3_btn.clicked.connect(self.s3_browse_requested)
+        header_row.addWidget(self._s3_btn)
+
         layout.addLayout(header_row)
 
         # All discoverable datasets (populated from filesystem scan)
@@ -134,6 +143,29 @@ class BlockListPanel(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def set_s3_available(self, available: bool, configured: bool = True) -> None:
+        """Update the S3 button state.
+
+        Parameters
+        ----------
+        available:
+            True when credentials are present and the button should be clickable.
+        configured:
+            False when the bucket env vars are not set; shows a different tooltip.
+        """
+        self._s3_btn.setEnabled(available)
+        if available:
+            self._s3_btn.setToolTip("Browse and download datasets from S3")
+        elif not configured:
+            self._s3_btn.setToolTip(
+                "S3 not configured — set ANNOTATOR_S3_DATA_BUCKET env var to enable"
+            )
+        else:
+            self._s3_btn.setToolTip(
+                "S3 credentials not found — configure via AWS CLI or set "
+                "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars"
+            )
 
     def set_dataset(self, path: "Path | None") -> None:
         """Update the displayed dataset/channel name from *path*.

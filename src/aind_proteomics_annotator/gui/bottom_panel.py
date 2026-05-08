@@ -60,6 +60,14 @@ class BottomPanel(QWidget):
     def hide_loading(self) -> None:
         pass
 
+    def show_status(self, msg: str) -> None:
+        """Temporarily replace the instruction text with *msg*."""
+        self._instructions.setText(msg)
+
+    def hide_status(self) -> None:
+        """Restore the default instruction text."""
+        self._instructions.setText(self._BASE_INSTRUCTIONS)
+
     def set_current_block(self, block_id: str, display_name: str = None) -> None:
         name = display_name if display_name else block_id
         self._instructions.setText(

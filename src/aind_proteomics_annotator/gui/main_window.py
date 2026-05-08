@@ -30,6 +30,10 @@ napari vispy canvas holds keyboard focus.
 
 from __future__ import annotations
 
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (QMainWindow, QShortcut, QSplitter, QTabWidget,
@@ -52,13 +56,16 @@ class MainWindow(QMainWindow):
         The :class:`AppConfig` instance.
     registry:
         A populated :class:`BlockRegistry`.
+    s3_client:
+        Optional :class:`S3Client`; ``None`` for local-only mode.
     """
 
-    def __init__(self, session, config, registry) -> None:
+    def __init__(self, session, config, registry, s3_client=None) -> None:
         super().__init__()
         self._session = session
         self._config = config
         self._registry = registry
+        self._s3_client = s3_client
 
         self.resize(1600, 950)
 
@@ -66,7 +73,17 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._install_shortcuts()
 
-        # Initial population of the block list.
+        # Enable the S3 button only when an S3 client is available.
+        self._block_list.set_s3_available(
+            available=s3_client is not None,
+            configured=config.s3_enabled,
+        )
+
+        # Initialise annotation store for the startup dataset so that
+        # annotations and green-status counting work before the user
+        # explicitly browses to a different dataset.
+        self._session.switch_data_root(self._registry.data_root)
+
         self._block_list.populate(
             self._registry.all_blocks(),
             self._session.store,
@@ -90,20 +107,16 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Horizontal splitter: block list | main content area
         h_splitter = QSplitter(Qt.Horizontal)
 
-        # -- Left panel: block list --
         self._block_list = BlockListPanel(
             session=self._session,
             config=self._config,
         )
         h_splitter.addWidget(self._block_list)
 
-        # -- Right: tab widget --
         self._tabs = QTabWidget()
 
-        # Annotator tab
         annotator_widget = QWidget()
         ann_layout = QVBoxLayout(annotator_widget)
         ann_layout.setContentsMargins(0, 0, 0, 0)
@@ -120,9 +133,7 @@ class MainWindow(QMainWindow):
         self._channel_controls = ChannelControlsPanel(config=self._config)
         self._channel_controls.set_viewer(self._viewer_panel.viewer)
         self._channel_controls.set_prefs_file(
-            self._config.channel_prefs_file_for_dataset(
-                self._session.username, self._registry.data_root
-            )
+            self._config.channel_prefs_file(self._session.username)
         )
         self._channel_controls.set_class_info(
             self._config.classes,
@@ -130,7 +141,6 @@ class MainWindow(QMainWindow):
         )
         viewer_splitter.addWidget(self._channel_controls)
 
-        # Viewer gets ~3× more space than channel controls
         viewer_splitter.setStretchFactor(0, 3)
         viewer_splitter.setStretchFactor(1, 1)
         viewer_splitter.setSizes([1050, 370])
@@ -138,7 +148,6 @@ class MainWindow(QMainWindow):
         ann_layout.addWidget(viewer_splitter)
         self._tabs.addTab(annotator_widget, "Annotator")
 
-        # Admin panel instantiated lazily when the button is pressed.
         self._admin_panel = None
 
         h_splitter.addWidget(self._tabs)
@@ -147,13 +156,13 @@ class MainWindow(QMainWindow):
 
         root.addWidget(h_splitter, stretch=1)
 
-        # Bottom status bar
         self._bottom = BottomPanel(total_blocks=self._registry.block_count())
         root.addWidget(self._bottom)
 
     def _connect_signals(self) -> None:
         self._block_list.block_selected.connect(self._on_block_selected)
         self._block_list.browse_requested.connect(self._on_browse_requested)
+        self._block_list.s3_browse_requested.connect(self._on_s3_browse_requested)
         self._viewer_panel.loading_started.connect(self._bottom.show_loading)
         self._viewer_panel.loading_finished.connect(self._bottom.hide_loading)
         self._viewer_panel.channels_loaded.connect(
@@ -164,26 +173,21 @@ class MainWindow(QMainWindow):
             self._bottom.admin_view_requested.connect(self._open_admin_view)
 
     def _install_shortcuts(self) -> None:
-        """Install all application-wide keyboard shortcuts."""
-
         def _sc(key, slot):
             s = QShortcut(QKeySequence(key), self)
             s.setContext(Qt.ApplicationShortcut)
             s.activated.connect(slot)
             return s
 
-        # Annotation labels 1..N
         for label in range(1, len(self._config.classes) + 1):
             _sc(str(label), lambda lbl=label: self._annotate(lbl))
 
-        # Playback / navigation
         _sc(Qt.Key_Space, self._viewer_panel.toggle_autoplay)
         _sc(Qt.Key_Up, self._go_prev)
         _sc(Qt.Key_Down, self._go_next)
         _sc(Qt.Key_R, self._viewer_panel.reset_view)
         _sc(Qt.Key_Backspace, self._undo_annotation)
 
-        # Channel visibility Alt+1..7
         for ch_idx in range(1, 8):
             _sc(
                 QKeySequence(Qt.ALT | getattr(Qt, f"Key_{ch_idx}")),
@@ -191,6 +195,14 @@ class MainWindow(QMainWindow):
                     idx
                 ),
             )
+
+    # ------------------------------------------------------------------
+    # Close event — upload annotations before exit
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        self._upload_annotations_to_s3(wait=True)
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Slot implementations
@@ -205,32 +217,39 @@ class MainWindow(QMainWindow):
         self._update_overlay_progress()
 
     def _annotate(self, label: int) -> None:
-        """Apply *label* to the currently displayed block and persist."""
         block_id = self._viewer_panel.current_block_id
         if block_id is None:
             return
 
-        # Persist annotation.
         self._session.store.set_label(block_id, label)
 
-        # Update overlay label.
         class_name = ""
         if 1 <= label <= len(self._config.classes):
             class_name = self._config.classes[label - 1]
         self._viewer_panel.show_label(label, class_name)
 
-        # Refresh block list colour and progress bar.
         self._block_list.refresh_block_status(block_id)
         annotated_count = len(self._session.store.annotated_block_ids())
         self._bottom.update_progress(annotated_count)
         self._update_overlay_progress()
 
-        # Auto-advance to the next block when the option is on.
+        # If all blocks in the current dataset are now annotated, move to the
+        # next dataset that still has unannotated blocks.
+        total = self._registry.block_count()
+        if total > 0:
+            current_done = sum(
+                1
+                for b in self._registry.all_blocks()
+                if self._session.store.get_label(b.block_id) is not None
+            )
+            if current_done >= total:
+                self._go_next_dataset()
+                return
+
         if self._block_list.auto_advance:
             self._go_next()
 
     def _undo_annotation(self) -> None:
-        """Clear the annotation for the currently displayed block."""
         block_id = self._viewer_panel.current_block_id
         if block_id is None:
             return
@@ -247,18 +266,70 @@ class MainWindow(QMainWindow):
     def _go_prev(self) -> None:
         self._block_list.select_prev_block()
 
+    def _go_next_dataset(self) -> None:
+        """Switch to the next dataset that still has unannotated blocks."""
+        datasets = self._get_all_datasets()
+        if not datasets:
+            return
+
+        current = str(self._registry.data_root.resolve())
+        current_idx = next(
+            (i for i, d in enumerate(datasets) if d["path"] == current), None
+        )
+        if current_idx is None:
+            self._block_list.set_recent_datasets(datasets)
+            return
+
+        n = len(datasets)
+        for offset in range(1, n + 1):
+            idx = (current_idx + offset) % n
+            d = datasets[idx]
+            if d["total"] > 0 and d["annotated"] < d["total"]:
+                self._on_browse_requested(d["path"])
+                return
+
+        # All datasets complete — refresh list so counts/colors update.
+        self._block_list.set_recent_datasets(datasets)
+
     def _on_browse_requested(self, path: str) -> None:
         """Switch to a new data root directory."""
+        # Upload annotations for the current dataset before switching.
+        self._upload_annotations_to_s3(wait=True)
+        self._switch_dataset(path)
+
+    def _on_s3_browse_requested(self) -> None:
+        """Open the S3 dataset browser dialog."""
+        from aind_proteomics_annotator.gui.s3_dataset_dialog import \
+            S3DatasetDialog
+
+        # Refresh the boto3 session so any newly-written SSO token cache
+        # (after 'aws sso login') is picked up without restarting the app.
+        if self._s3_client is not None:
+            self._s3_client.refresh()
+
+        dialog = S3DatasetDialog(
+            s3_client=self._s3_client,
+            config=self._config,
+            parent=self,
+        )
+        dialog.dataset_ready.connect(self._on_browse_requested)
+        dialog.exec()
+        # Refresh the datasets panel to show any newly downloaded datasets,
+        # even if the user closed the dialog without opening one.
+        self._block_list.set_recent_datasets(self._get_all_datasets())
+
+    # ------------------------------------------------------------------
+    # Dataset switching helper
+    # ------------------------------------------------------------------
+
+    def _switch_dataset(self, path: str) -> None:
+        """Update registry, session, and all UI panels to *path*."""
         self._registry.rescan(path)
+        self._session.switch_data_root(Path(path))
         self._viewer_panel._block_cache.clear()
         self._viewer_panel.reload_local_points()
-        # Switch channel-control prefs to the new dataset's file so LUT/range
-        # settings from the previous dataset don't bleed into this one, and
-        # any previously saved settings for this dataset are restored.
         self._channel_controls.switch_dataset(
-            self._config.channel_prefs_file_for_dataset(
-                self._session.username, self._registry.data_root
-            )
+            self._config.channel_prefs_file(self._session.username)
         )
         blocks = self._registry.all_blocks()
         self._block_list.populate(blocks, self._session.store)
@@ -268,16 +339,65 @@ class MainWindow(QMainWindow):
         self._bottom.update_progress(annotated_count)
         self._update_dataset_display(self._registry.data_root)
         self._block_list.set_recent_datasets(self._get_all_datasets())
-        # Refresh admin panel if it's already open.
         if self._admin_panel is not None:
             self._admin_panel.refresh_data()
+
+    # ------------------------------------------------------------------
+    # S3 upload
+    # ------------------------------------------------------------------
+
+    def _upload_annotations_to_s3(self, wait: bool = False) -> None:
+        """Upload the current dataset's annotations to S3 if in cloud mode.
+
+        Only runs when an S3 client is available and the active store is the
+        cloud store (i.e. the dataset lives under ``cloud_datasets/``).
+        """
+        if self._s3_client is None or not self._session._is_cloud_dataset:
+            return
+        if not self._config.s3_output_bucket:
+            return
+
+        annotations = self._session.store.all_annotations()
+        if not annotations:
+            return
+
+        dataset_slug = self._session._current_dataset_slug
+        dataset_key = self._session._current_dataset_key
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        s3_key = self._config.s3_user_annotation_key(
+            self._session.username, dataset_slug, date_str
+        )
+
+        payload = {
+            "username": self._session.username,
+            "dataset_key": dataset_key,
+            "dataset_slug": dataset_slug,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "annotations": annotations,
+        }
+
+        self._bottom.show_status("Uploading annotations to S3…")
+
+        def _upload():
+            try:
+                self._s3_client.upload_annotation_json(
+                    self._config.s3_output_bucket, s3_key, payload
+                )
+            except Exception:
+                pass  # silent failure — local copy is always preserved
+
+        thread = threading.Thread(target=_upload, daemon=True)
+        thread.start()
+        if wait:
+            thread.join(timeout=10)
+
+        self._bottom.hide_status()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _open_admin_view(self) -> None:
-        """Open the Admin View in a separate window (create once, reuse after)."""
         from qtpy.QtWidgets import QDialog, QVBoxLayout
 
         from aind_proteomics_annotator.gui.admin_panel import AdminPanel
@@ -287,10 +407,10 @@ class MainWindow(QMainWindow):
                 config=self._config,
                 registry=self._registry,
                 session=self._session,
+                s3_client=self._s3_client,
             )
             self._admin_panel.block_selected.connect(self._on_admin_block_selected)
 
-        # Wrap in a resizable dialog the first time or if it was closed.
         if not hasattr(self, "_admin_dialog") or not self._admin_dialog.isVisible():
             from qtpy.QtCore import Qt
 
@@ -309,32 +429,55 @@ class MainWindow(QMainWindow):
         self._admin_dialog.activateWindow()
 
     def _on_admin_block_selected(self, block_id: str) -> None:
-        """Load *block_id* in the viewer when the admin clicks a table row."""
         block_info = self._registry.get_block(block_id)
+
+        # Cloud composite key: "dataset/rel/path/blocks/block_name"
+        if block_info is None and "/" in block_id:
+            parts = block_id.rsplit("/", 1)
+            dataset_rel, block_name = parts[0], parts[1]
+            for base in (self._config.s3_local_cache, self._registry.data_root.parent):
+                blocks_abs = Path(base) / dataset_rel
+                if blocks_abs.exists():
+                    self._on_browse_requested(str(blocks_abs))
+                    block_info = self._registry.get_block(block_name)
+                    break
+
         if block_info is None:
             return
-        # Highlight the block in the left panel (fires block_selected → load_block
-        # via the normal signal, so we only need to select it in the list).
+
+        self._viewer_panel.load_block(block_info)
+        # Force autoplay to start once this block finishes loading.
+        # load_block() sets _autoplay_suspended synchronously (before the async
+        # worker launches), so overriding it here is safe. Block signals so we
+        # don't start the timer early while data is still loading.
+        self._viewer_panel._autoplay_suspended = True
+        if not self._viewer_panel._autoplay_btn.isChecked():
+            self._viewer_panel._autoplay_btn.blockSignals(True)
+            self._viewer_panel._autoplay_btn.setChecked(True)
+            self._viewer_panel._autoplay_btn.blockSignals(False)
+            self._viewer_panel._autoplay_btn.setText("Stop")
+
+        self._bottom.set_current_block(block_info.block_id)
+        self._update_overlay_progress()
+
         for i in range(self._block_list._list.count()):
             item = self._block_list._list.item(i)
-            if item and item.data(Qt.UserRole) == block_id:
+            if item and item.data(Qt.UserRole) == block_info.block_id:
+                self._block_list._list.blockSignals(True)
                 self._block_list._list.setCurrentRow(i)
+                self._block_list._list.blockSignals(False)
                 break
-        else:
-            # Block not in list (different dataset) — load directly.
-            self._viewer_panel.load_block(block_info)
-            self._bottom.set_current_block(block_id)
-            self._update_overlay_progress()
+
+        # Re-select the admin table row and restore focus.  In cloud mode,
+        # _on_browse_requested above may have called refresh_data() which
+        # rebuilds the table and clears the selection.
+        if self._admin_panel is not None:
+            self._admin_panel.select_block_row(block_id)
 
     def _get_all_datasets(self) -> list:
-        """Discover all blocks/ directories under the data root and return
-        annotation counts for each.
-
-        Each returned dict has keys: "path" (str), "annotated" (int),
-        "total" (int).  Items with no annotations yet are included (gray in the
-        UI); items partially done are orange; complete items are green.
-        """
         import re
+
+        from aind_proteomics_annotator.utils.atomic_io import read_json
 
         _block_re = re.compile(
             r"^block_(?:"
@@ -344,7 +487,6 @@ class MainWindow(QMainWindow):
         )
         data_root = self._registry.data_root
         scan_root = self._find_scan_root(data_root)
-        annotations = self._session.store._data.get("annotations", {})
 
         result = []
         try:
@@ -352,12 +494,33 @@ class MainWindow(QMainWindow):
         except OSError:
             blocks_dirs = [data_root] if data_root.is_dir() else []
 
+        try:
+            cloud_cache = self._config.s3_local_cache.resolve()
+        except Exception:
+            cloud_cache = None
+
         for blocks_dir in blocks_dirs[:200]:
-            path_str = str(blocks_dir.resolve())
-            dataset_ann = annotations.get(path_str, {})
-            annotated = sum(
-                1 for v in dataset_ann.values() if v.get("label") is not None
+            dataset_key = self._config.dataset_key_for_path(blocks_dir)
+            is_cloud = False
+            if cloud_cache is not None:
+                try:
+                    blocks_dir.resolve().relative_to(cloud_cache)
+                    is_cloud = True
+                except ValueError:
+                    pass
+            ann_file = self._config.user_dataset_file(
+                self._session.username, dataset_key, cloud=is_cloud
             )
+            annotated = 0
+            if ann_file.exists():
+                data = read_json(ann_file)
+                if data and "annotations" in data:
+                    annotated = sum(
+                        1
+                        for v in data["annotations"].values()
+                        if v.get("label") is not None
+                    )
+            path_str = str(blocks_dir.resolve())
             try:
                 total = sum(
                     1
@@ -370,19 +533,13 @@ class MainWindow(QMainWindow):
         return result
 
     def _find_scan_root(self, data_root) -> "Path":
-        """Walk up the directory tree to find the top-level data directory.
-
-        Looks for the nearest ancestor that directly contains Tile_*
-        sub-directories (indicating it is the root that holds all datasets).
-        Falls back to ``data_root.parent`` if none is found within six levels.
-        """
         import re
 
         _tile_re = re.compile(r"tile_", re.IGNORECASE)
-        p = data_root.parent  # start above the blocks/ dir
+        p = data_root.parent
         for _ in range(6):
             parent = p.parent
-            if parent == p:  # filesystem root
+            if parent == p:
                 break
             try:
                 children = [d.name for d in parent.iterdir() if d.is_dir()]
@@ -391,10 +548,9 @@ class MainWindow(QMainWindow):
             except OSError:
                 break
             p = parent
-        return data_root.parent  # fallback
+        return data_root.parent
 
     def _update_dataset_display(self, data_root) -> None:
-        """Update the window title and block-list header with the dataset name."""
         from pathlib import Path
 
         from aind_proteomics_annotator.gui.block_list_panel import \
@@ -407,8 +563,6 @@ class MainWindow(QMainWindow):
         self._block_list.set_dataset(Path(data_root))
 
     def _update_overlay_progress(self) -> None:
-        """Push current block index and total to the overlay."""
         block_index = self._block_list.current_block_index()
         total = self._registry.block_count()
-        # Show as "Block 0/19" (0-indexed, matching block_0000 filenames).
         self._viewer_panel.update_overlay_progress(block_index, max(0, total - 1))
