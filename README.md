@@ -17,6 +17,8 @@ To execute: `sh launch.sh`. All paths and S3 settings are controlled by environm
 - [Data Format](#data-format)
 - [Storage Format](#storage-format)
 - [S3 Integration](#s3-integration)
+  - [AWS SSO setup](#aws-sso-setup-recommended-for-aind)
+  - [Re-authenticating after token expiry](#re-authenticating-after-token-expiry)
 - [UI Walkthrough](#ui-walkthrough)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Admin Mode](#admin-mode)
@@ -333,9 +335,87 @@ s3://{ANNOTATOR_S3_OUTPUT_BUCKET}/{ANNOTATOR_S3_OUTPUT_PREFIX}/admin/{experiment
 
 ### AWS credentials
 
-The standard credential chain is checked silently at startup (env vars → `~/.aws/credentials` → instance profile). No interactive credential dialog is shown; use `aws configure` or set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables.
+The standard credential chain is checked silently at startup (env vars → `~/.aws/credentials` → instance profile). No interactive credential dialog is shown.
+
+#### AWS SSO setup (recommended for AIND)
+
+AIND machines use AWS IAM Identity Center (SSO). Follow these steps once per machine:
+
+**1. Install the AWS CLI v2**
+
+```bash
+# macOS (Homebrew)
+brew install awscli
+
+# Linux — see https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+```
+
+**2. Configure an SSO profile**
+
+```bash
+aws configure sso
+```
+
+Follow the prompts:
+
+| Prompt | Example value |
+|---|---|
+| SSO session name | `aind-sso` |
+| SSO start URL | `https://your-org.awsapps.com/start` |
+| SSO region | `us-west-2` |
+| Default output format | `json` |
+
+At the end of the wizard AWS will ask you to name the profile (e.g. `aind`). Use that name for `ANNOTATOR_S3_PROFILE`:
+
+For AIND users, follow Yosef Bedaso's email related to SSO authentication to configure the console.
+
+```bash
+export ANNOTATOR_S3_PROFILE=your-profile
+```
+
+**3. Log in for the first time**
+
+```bash
+aws sso login --profile your-profile
+```
+
+This opens a browser tab where you approve the request. On success the tool can access S3 immediately.
+
+#### Re-authenticating after token expiry
+
+SSO tokens expire (typically after 8–12 hours or when your session ends). When credentials expire you will see an error dialog inside the app:
+
+> *AWS credentials have expired. Run the following command in your terminal, then click S3 again:*
+> `aws sso login --profile your-profile`
+
+**To re-authenticate without restarting the app:**
+
+1. Open a terminal (keep the app running).
+2. Run:
+   ```bash
+   aws sso login --profile your-profile
+   ```
+3. Approve the browser prompt.
+4. Back in the app, click the **S3…** button (or retry the failing action) — the app picks up the refreshed token automatically without restarting.
 
 ---
+
+The login will tell you if AWS credentials were accepted or not.
+
+If you're using the launch.sh script, you can set the environment variables there:
+
+S3 config:
+> export ANNOTATOR_S3_DATA_BUCKET=some-bucket
+> export ANNOTATOR_S3_DATA_PREFIX=some-prefix
+> export ANNOTATOR_S3_OUTPUT_BUCKET=some-output-bucket
+> export ANNOTATOR_S3_OUTPUT_PREFIX=some-output-prefix
+> export ANNOTATOR_S3_PROFILE=some-profile
+
+- ANNOTATOR_S3_DATA_BUCKET: Bucket where the annotation blocks are stored.
+- ANNOTATOR_S3_DATA_PREFIX: Prefix where the annotation blocks are stored.
+- ANNOTATOR_S3_OUTPUT_BUCKET: Output bucket for the generated annotations.
+- ANNOTATOR_S3_OUTPUT_PREFIX: Prefix for the generated annotations.
+- ANNOTATOR_S3_PROFILE: your-profile. This needs to have the required permissions to write to the previously given bucket.
 
 ## UI Walkthrough
 
