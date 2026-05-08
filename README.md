@@ -233,35 +233,41 @@ All annotation data is plain JSON. No database is required.
 annotations/
 ├── users/
 │   ├── local/
-│   │   └── {username}.json           ← annotations for local filesystem datasets
+│   │   └── {username}/
+│   │       └── {experiment}/
+│   │           └── {tile}_{ch}_blocks.json   ← one file per dataset, local
 │   ├── cloud/
-│   │   └── {username}.json           ← annotations for S3-downloaded datasets
+│   │   └── {username}/
+│   │       └── {experiment}/
+│   │           └── {tile}_{ch}_blocks.json   ← one file per dataset, cloud
 │   └── display_preferences/
-│       └── {username}.json           ← global channel LUT/intensity settings
+│       └── {username}.json                   ← global channel LUT/intensity settings
 └── admin/
     ├── local/
-    │   └── final_labels.json         ← admin overrides for local datasets
+    │   └── {dataset_slug}_final_labels.json  ← admin overrides for local datasets
     └── cloud/
-        └── final_labels.json         ← admin overrides for cloud datasets
+        └── {dataset_slug}_final_labels.json  ← admin overrides for cloud datasets
 ```
 
-### Per-user annotations — `annotations/users/{local|cloud}/{username}.json`
+Annotation files are **scoped per dataset** — one JSON file per (user, dataset) pair. The path is derived from the dataset key: the first path component becomes a sub-directory (experiment name) and the rest is flattened into the filename. For example, dataset key `HCR_000000-s107-ls1_2026-01-23_00-00-00/Tile_X_0000_Y_0000_Z_0000/ch_561/blocks` maps to `{username}/HCR_000000-s107-ls1_2026-01-23_00-00-00/Tile_X_0000_Y_0000_Z_0000_ch_561_blocks.json`.
+
+Local and cloud annotations are stored under separate trees so cloud annotations can be uploaded to S3 independently.
+
+### Per-user annotations — `annotations/users/{local|cloud}/{username}/{experiment}/{slug}.json`
 
 ```json
 {
   "username": "alice",
+  "dataset_key": "HCR_000000-s107-ls1_2026-01-23_00-00-00/Tile_X_0000_Y_0000_Z_0000/ch_561/blocks",
+  "dataset_slug": "HCR_000000-s107-ls1_2026-01-23_00-00-00_Tile_X_0000_Y_0000_Z_0000_ch_561_blocks",
   "created_at": "2024-01-01T00:00:00+00:00",
   "updated_at": "2024-01-02T10:30:00+00:00",
   "annotations": {
-    "/absolute/path/to/blocks": {
-      "block_0001": {"label": 1, "annotated_at": "2024-01-02T10:30:00+00:00"},
-      "block_0002": {"label": 3, "annotated_at": "2024-01-02T11:00:00+00:00"}
-    }
+    "block_0001": {"label": 1, "annotated_at": "2024-01-02T10:30:00+00:00"},
+    "block_0002": {"label": 3, "annotated_at": "2024-01-02T11:00:00+00:00"}
   }
 }
 ```
-
-Local and cloud annotations are stored in separate files so cloud annotations can be uploaded to S3 independently.
 
 ### Display preferences — `annotations/users/display_preferences/{username}.json`
 
@@ -315,10 +321,15 @@ Annotations for cloud-sourced datasets (those under `cloud_datasets/`) are uploa
 
 Uploads go to:
 ```
-s3://{ANNOTATOR_S3_OUTPUT_BUCKET}/{ANNOTATOR_S3_OUTPUT_PREFIX}/{username}/{dataset_path}/{YYYY-MM-DD}.json
+s3://{ANNOTATOR_S3_OUTPUT_BUCKET}/{ANNOTATOR_S3_OUTPUT_PREFIX}/users/{username}/{dataset_slug}/{YYYY-MM-DD}.json
 ```
 
 A new date-stamped file is created each day — existing files are never overwritten. Local annotations are **never** uploaded.
+
+Admin final-label uploads (triggered when the admin clicks **Set Final Label** in Cloud mode) go to:
+```
+s3://{ANNOTATOR_S3_OUTPUT_BUCKET}/{ANNOTATOR_S3_OUTPUT_PREFIX}/admin/{experiment}/{tile}_{ch}_blocks_{YYYY-MM-DD}_final_labels.json
+```
 
 ### AWS credentials
 
@@ -435,9 +446,11 @@ In Cloud mode a **Sync from S3** button downloads the latest annotation files fo
 
 ### Override final label
 
-1. Click a row to select a block.
-2. Use the spin box to choose a label.
-3. Click **Set Final Label** — writes to `annotations/admin/{local|cloud}/final_labels.json` atomically.
+1. Click a row to select a block (auto-play starts automatically in admin mode).
+2. **Quick apply**: double-click any cell in a user column that shows a label (1, 2, 3…) — the label is applied immediately as the final label for that block.
+3. **Manual apply**: use the spin box to choose a label, then click **Set Final Label**.
+
+Both paths write to `annotations/admin/{local|cloud}/{dataset_slug}_final_labels.json` atomically and, in Cloud mode, also upload to S3.
 
 ### Export CSV
 
@@ -470,16 +483,16 @@ aind-proteomics-annotator-gui/
 ├── annotations/                        # Gitignored — mount-point for annotation JSON
 │   ├── users/
 │   │   ├── local/
-│   │   │   └── {username}.json         # Annotations for local datasets
+│   │   │   └── {username}/{experiment}/{slug}.json  # Per-dataset, local
 │   │   ├── cloud/
-│   │   │   └── {username}.json         # Annotations for S3-downloaded datasets
+│   │   │   └── {username}/{experiment}/{slug}.json  # Per-dataset, cloud
 │   │   └── display_preferences/
 │   │       └── {username}.json         # Global channel LUT/intensity settings
 │   └── admin/
 │       ├── local/
-│       │   └── final_labels.json       # Admin overrides for local datasets
+│       │   └── {dataset_slug}_final_labels.json     # Admin overrides, local
 │       └── cloud/
-│           └── final_labels.json       # Admin overrides for cloud datasets
+│           └── {dataset_slug}_final_labels.json     # Admin overrides, cloud
 │
 ├── src/
 │   └── aind_proteomics_annotator/
@@ -627,7 +640,7 @@ PYTHONPATH=src pytest tests/ -v
 PYTHONPATH=src pytest tests/ --cov=aind_proteomics_annotator --cov-report=term-missing
 ```
 
-36 tests covering: atomic I/O, annotation store CRUD, block registry discovery, and consensus algorithms. GUI tests (Qt/napari) require a display and are not included in the default suite.
+40 tests covering: atomic I/O, annotation store CRUD, block registry discovery, and consensus algorithms. GUI tests (Qt/napari) require a display and are not included in the default suite.
 
 ---
 

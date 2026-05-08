@@ -216,6 +216,7 @@ class AdminPanel(QWidget):
         )
         self._table.horizontalHeader().setStretchLastSection(False)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        self._table.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self._table, stretch=1)
 
     # ------------------------------------------------------------------
@@ -481,6 +482,18 @@ class AdminPanel(QWidget):
             self._selected_block_id = block_id_item.text()
             self._selected_block_display.setText(f"Block: {self._selected_block_id}")
             self.block_selected.emit(self._selected_block_id)
+
+    def _on_item_double_clicked(self, item) -> None:
+        """Double-click a user label cell to apply it as the final label."""
+        col = self._table.column(item)
+        if col < 4:
+            return
+        try:
+            label = int(item.text())
+        except ValueError:
+            return
+        self._override_spin.setValue(label)
+        self._set_final_label()
 
     def _set_final_label(self) -> None:
         if self._selected_block_id is None:

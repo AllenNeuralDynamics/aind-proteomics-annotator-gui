@@ -446,6 +446,17 @@ class MainWindow(QMainWindow):
             return
 
         self._viewer_panel.load_block(block_info)
+        # Force autoplay to start once this block finishes loading.
+        # load_block() sets _autoplay_suspended synchronously (before the async
+        # worker launches), so overriding it here is safe. Block signals so we
+        # don't start the timer early while data is still loading.
+        self._viewer_panel._autoplay_suspended = True
+        if not self._viewer_panel._autoplay_btn.isChecked():
+            self._viewer_panel._autoplay_btn.blockSignals(True)
+            self._viewer_panel._autoplay_btn.setChecked(True)
+            self._viewer_panel._autoplay_btn.blockSignals(False)
+            self._viewer_panel._autoplay_btn.setText("Stop")
+
         self._bottom.set_current_block(block_info.block_id)
         self._update_overlay_progress()
 
