@@ -43,7 +43,7 @@ def _s3_status(config) -> tuple[str, str]:
         if creds is not None:
             return "S3 credentials found ✓  —  S3 button will be active", "#44CC44"
         return (
-            "S3: no credentials found  —  run 'aws configure'  or set "
+            "S3: no credentials found  —  run 'aws configure sso'  or set "
             "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars",
             "#DDAA33",
         )
@@ -56,8 +56,8 @@ def _s3_status(config) -> tuple[str, str]:
         if "ProfileNotFound" in exc_type or "profile" in exc_msg.lower():
             hint = (
                 f"Profile '{profile}' not found.  "
-                "Check ANNOTATOR_S3_PROFILE or run 'aws configure --profile "
-                f"{profile}' to create it."
+                f"Run 'aws configure sso' to create it, then "
+                f"'aws sso login --profile {profile}' to authenticate."
             )
             return f"S3 credential error: {hint}", "#FF7744"
 
