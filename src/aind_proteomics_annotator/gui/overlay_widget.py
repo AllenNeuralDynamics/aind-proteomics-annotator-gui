@@ -5,6 +5,8 @@ The widget is click-through (WA_TransparentForMouseEvents) so it doesn't
 interfere with napari's mouse interactions.
 """
 
+from html import escape
+
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel
 
@@ -34,6 +36,7 @@ class OverlayWidget(QLabel):
         self,
         parent=None,
         color_map: "dict | None" = None,
+        channel_names: "list | None" = None,
     ) -> None:
         super().__init__(parent)
         self._color_map: dict = color_map or {
@@ -43,7 +46,11 @@ class OverlayWidget(QLabel):
         }
         self._label_text = "No Label"
         self._progress_text = ""
+        self._channel_text = ""
         self._current_label: "int | None" = None
+
+        if channel_names:
+            self.set_channel_names(channel_names)
 
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -90,6 +97,16 @@ class OverlayWidget(QLabel):
         self._set_style(label)
         self._refresh()
 
+    def set_channel_names(self, names: "list[str]") -> None:
+        """Show a channel legend line: 'Ch 0: DAPI  |  Ch 1: NeuN  |  Ch 2: GFAP'."""
+        if names:
+            self._channel_text = "  |  ".join(
+                f"Ch {i}: {name}" for i, name in enumerate(names)
+            )
+        else:
+            self._channel_text = ""
+        self._refresh()
+
     def clear(self) -> None:
         """Reset overlay to the 'No Label' state."""
         self._label_text = "No Label"
@@ -102,10 +119,16 @@ class OverlayWidget(QLabel):
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        parts = [self._label_text]
+        main_html = "<br>".join(escape(line) for line in self._label_text.split("\n"))
+        parts = [main_html]
         if self._progress_text:
-            parts.append(self._progress_text)
-        new_text = "\n".join(parts)
+            parts.append(escape(self._progress_text))
+        if self._channel_text:
+            parts.append(
+                '<span style="font-size:11px;font-weight:normal;color:#999999;">'
+                + escape(self._channel_text) + "</span>"
+            )
+        new_text = "<br>".join(parts)
         if new_text != self.text():
             self.setText(new_text)
             self.adjustSize()

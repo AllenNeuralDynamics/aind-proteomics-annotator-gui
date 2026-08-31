@@ -104,6 +104,7 @@ class ViewerPanel(QWidget):
         self._overlay = OverlayWidget(
             parent=self._qt_viewer_widget,
             color_map=self._config.label_color_map,
+            channel_names=self._config.channel_names,
         )
         self._overlay.show()
         self._overlay.raise_()

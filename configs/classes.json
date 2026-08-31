@@ -5,8 +5,8 @@
     {"name": "Unknown", "color": "#FF6622"}
   ],
   "channel_names": [
-    "488",
-    "561",
-    "638"
+    "488 - pan-protein",
+    "561 - Protein A (assign name)",
+    "638 - Protein B (assign name)"
   ]
 }
